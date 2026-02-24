@@ -30,8 +30,9 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .login-feat-icon{font-size:18px;flex-shrink:0;}
 .login-feat-text .t{font-size:11px;font-weight:700;margin-bottom:2px;}
 .login-feat-text .s{font-size:9px;color:var(--sub);}
-.btn-login{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(135deg,#cc2936,#ff444f);color:#fff;font-size:14px;font-weight:800;cursor:pointer;transition:all .2s;margin-bottom:12px;letter-spacing:.3px;text-decoration:none;}
-.btn-login:hover{transform:translateY(-2px);box-shadow:0 8px 28px #ff444f50;}
+.btn-login{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:16px;border:none;border-radius:12px;background:linear-gradient(135deg,#cc2936,#ff444f);color:#fff;font-size:15px;font-weight:800;cursor:pointer;transition:all .2s;margin-bottom:12px;letter-spacing:.3px;text-decoration:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;box-shadow:0 4px 20px #cc293650;user-select:none;}
+.btn-login:hover{transform:translateY(-2px);box-shadow:0 8px 28px #ff444f70;}
+.btn-login:active{transform:scale(0.98);opacity:.9;}
 .btn-login svg{width:22px;height:22px;flex-shrink:0;}
 .login-note{font-size:10px;color:var(--sub);line-height:1.6;}
 .login-note a{color:var(--blue);text-decoration:none;}
@@ -416,12 +417,12 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
       <div class="login-feat"><div class="login-feat-icon">🔭</div><div class="login-feat-text"><div class="t">Volatility Scanner</div><div class="s">Auto-selects best market</div></div></div>
       <div class="login-feat"><div class="login-feat-icon">💰</div><div class="login-feat-text"><div class="t">Live Balance</div><div class="s">Real-time updates on every trade</div></div></div>
     </div>
-    <a class="btn-login" id="loginBtn" href="#">
+    <a class="btn-login" id="loginBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top">
       <svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="48" fill="#CC2936"/><path d="M28 72 L50 28 L72 72 Z" fill="white"/></svg>
       Login with Deriv Account
     </a>
     <div class="login-divider"><span>OR</span></div>
-    <button class="btn-login" id="demoBtn" style="background:linear-gradient(135deg,#1e2736,#2a3444);font-size:13px;">
+    <button class="btn-login" id="demoBtn" type="button" style="background:linear-gradient(135deg,#1e2736,#2a3444);font-size:13px;">
       👁 Demo Mode (Watch Only)
     </button>
     <div class="login-note">
@@ -829,7 +830,6 @@ function saveTokenStore(){
 // INIT — check URL for OAuth tokens first
 // ═══════════════════════════════════════════
 (function init(){
-  $('loginBtn').href=OAUTH_URL;
   loadTokenStore();
 
   // Check OAuth redirect
@@ -867,7 +867,12 @@ function saveTokenStore(){
   showLogin();
 })();
 
-function showLogin(){$('loginOverlay').style.display='flex';}
+function showLogin(){
+  $('loginOverlay').style.display='flex';
+  // Ensure login button always has correct href (in case of any override)
+  const lb=$('loginBtn');
+  if(lb)lb.href=OAUTH_URL;
+}
 function hideLogin(){
   $('loginOverlay').style.display='none';
   bootApp();
@@ -880,8 +885,6 @@ $('demoBtn').addEventListener('click',()=>{
   toast('👁 Demo Mode — simulated trades only','',5000);
   setTimeout(()=>ariaSpeak('Welcome to demo mode! I am ARIA. Enable the AI Sniper to begin.'),1200);
 });
-
-$('loginBtn').href=OAUTH_URL;
 
 // ═══════════════════════════════════════════
 // BOOT
@@ -1283,8 +1286,8 @@ function logout(){
   if(con)closeContract('Logout',false);
   if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}}
   ws=null;wsAlive=false;appReady=false;
-  $('loginOverlay').style.display='flex';
   $('userSection').style.display='none';
+  showLogin();
   $('acctSwitcher').style.display='none';
   $('hBalance').textContent='—';
   setDot('rc');
