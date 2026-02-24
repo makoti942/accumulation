@@ -840,26 +840,32 @@ function saveTokenStore(){
     saveTokenStore();
     // Clear URL without reload
     try{history.replaceState({},'',location.pathname);}catch(e){}
+    // Set the first account as active loginid immediately
+    const firstLoginid=Object.keys(tokens)[0]||'';
     activeToken=first;
-    lsSet('deriv_active','');// will be set after auth
+    activeLoginid=firstLoginid;
+    if(firstLoginid){
+      lsSet('deriv_active',firstLoginid);
+    }
     hideLogin();
     return;
   }
 
   // Check stored active token
   const storedActive=lsGet('deriv_active');
-  if(storedActive&&tokenStore[storedActive]){
+  if(storedActive&&tokenStore[storedActive]&&tokenStore[storedActive].token){
     activeToken=tokenStore[storedActive].token;
     activeLoginid=storedActive;
     hideLogin();
     return;
   }
-  // Check any token in store
-  const keys=Object.keys(tokenStore);
+  // Check any token in store (fallback)
+  const keys=Object.keys(tokenStore).filter(k=>tokenStore[k]&&tokenStore[k].token);
   if(keys.length>0){
     const k=keys[0];
     activeToken=tokenStore[k].token;
     activeLoginid=k;
+    lsSet('deriv_active',k);
     hideLogin();
     return;
   }
@@ -1041,15 +1047,19 @@ function handle(d){
     }
     authed=true;
     const a=d.authorize;
-    activeLoginid=a.loginid||activeLoginid;
+    // Always use the loginid from the authorize response — it is authoritative
+    const realLoginid=a.loginid||activeLoginid;
+    activeLoginid=realLoginid;
     userCurrency=a.currency||'USD';
-    userInfo={name:a.fullname||a.loginid||'Trader',loginid:a.loginid,currency:userCurrency};
+    userInfo={name:a.fullname||a.loginid||'Trader',loginid:realLoginid,currency:userCurrency};
     realBalance=a.balance!==undefined?parseFloat(a.balance):null;
 
-    // Save this token mapped to loginid
-    tokenStore[activeLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual,account_type:a.account_type||'real'};
-    lsSet('deriv_active',activeLoginid);
-    saveTokenStore();
+    // Save this token mapped to the real loginid — critical: never save to empty key
+    if(realLoginid){
+      tokenStore[realLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual,account_type:a.account_type||'real'};
+      lsSet('deriv_active',realLoginid);
+      saveTokenStore();
+    }
 
     // Build account list from account_list field
     if(a.account_list&&a.account_list.length){
@@ -1226,7 +1236,8 @@ function renderAcctMenu(){
     const tc=iv?'tag-demo':ic?'tag-crypto':'tag-real';
     const tn=iv?'DEMO':ic?'CRYPTO':'REAL';
     const isAct=a.loginid===activeLoginid;
-    const hasTok=!!(tokenStore[a.loginid]&&tokenStore[a.loginid].token);
+    const storedTk=tokenStore[a.loginid];
+    const hasTok=!!(storedTk&&(typeof storedTk==='string'?storedTk:storedTk.token));
     const bal=a.balance!=null?a.currency+' '+parseFloat(a.balance).toFixed(2):'—';
     return`<div class="acct-menu-item${isAct?' active-acct':''}" data-lid="${a.loginid}" style="${!hasTok?'opacity:.55;':''}" onclick="switchAccount('${a.loginid}')">
       <span class="acct-menu-tag ${tc}">${tn}</span>
@@ -1254,17 +1265,19 @@ function closeAcctMenu(){
 function switchAccount(loginid){
   closeAcctMenu();
   if(loginid===activeLoginid){toast('Already on this account','');return;}
+  // Resolve token — handle both flat string and {token:...} object formats
   const stored=tokenStore[loginid];
-  if(!stored||!stored.token){
-    // No token for this account — redirect to OAuth so user can login all accounts at once
-    toast('🔑 Logging in to '+loginid+'…','p',3000);
-    ariaSpeak('Redirecting to Deriv login to get access for '+loginid+'.');
+  const tok=stored?(typeof stored==='string'?stored:stored.token):'';
+  if(!tok){
+    // No token for this account — redirect to OAuth to get all tokens at once
+    toast('🔑 Re-login needed for '+loginid,'p',4000);
+    ariaSpeak('Redirecting to login to get access for all accounts.');
     setTimeout(()=>{window.location.href=OAUTH_URL;},1000);
     return;
   }
   // We have the token — switch directly without re-login
   if(con)closeContract('Account switch',false);
-  activeToken=stored.token;
+  activeToken=tok;
   activeLoginid=loginid;
   authed=false;realBalance=null;
   lsSet('deriv_active',loginid);
@@ -1272,7 +1285,7 @@ function switchAccount(loginid){
   $('userBal').textContent='Switching…';
   toast('🔄 Switching to '+loginid+'…','p',3000);
   ariaSpeak('Switching to '+loginid+'. One moment.');
-  // Re-authorize on existing connection
+  // Re-authorize on existing connection or reconnect
   if(ws&&ws.readyState===1){
     ws.send(JSON.stringify({authorize:activeToken}));
   } else {
@@ -1281,7 +1294,7 @@ function switchAccount(loginid){
 }
 
 function logout(){
-  lsDel('deriv_active');lsDel('deriv_ts');tokenStore={};
+  lsDel('deriv_active');lsDel('deriv_ts');lsDel('deriv_accounts');tokenStore={};
   activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];
   if(con)closeContract('Logout',false);
   if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}}
