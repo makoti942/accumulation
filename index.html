@@ -49,7 +49,6 @@ header{height:48px;background:var(--card);border-bottom:1px solid var(--border);
 .ai-tag{font-size:7px;font-weight:800;letter-spacing:1px;padding:2px 5px;border-radius:20px;background:linear-gradient(135deg,#6d28d9,#a855f7);color:#fff;animation:aiGlow 2s infinite;}
 @keyframes aiGlow{0%,100%{box-shadow:0 0 8px #a855f760;}50%{box-shadow:0 0 20px #a855f7aa;}}
 @media(max-width:400px){.logo-tag,.ai-tag{display:none;}}
-
 .hdr-right{display:flex;align-items:center;gap:4px;flex-shrink:0;}
 .hdr-badge{display:flex;align-items:center;gap:3px;background:#0a0d12;border:1px solid var(--border);border-radius:6px;padding:3px 7px;font-size:10px;white-space:nowrap;}
 .hdr-badge .val{font-weight:700;font-size:11px;}
@@ -62,7 +61,6 @@ header{height:48px;background:var(--card);border-bottom:1px solid var(--border);
 @keyframes blink{0%,100%{opacity:1;}50%{opacity:.5;}}
 @keyframes rcBlink{0%,100%{opacity:1;}50%{opacity:.3;}}
 
-/* LAYOUT */
 .layout{display:flex;flex:1;overflow:hidden;position:relative;}
 
 /* LEFT PANEL */
@@ -228,7 +226,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 .db{background:#ff3d7118;color:var(--red);}
 .chart-meta{margin-left:auto;display:flex;gap:8px;font-size:9px;color:var(--sub);flex-shrink:0;}
 @media(max-width:600px){.chart-meta{display:none;}}
-
 .chart-wrap{flex:1;position:relative;overflow:hidden;}
 #chart{width:100%;height:100%;}
 
@@ -265,8 +262,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 .em-fill{height:100%;border-radius:4px;transition:width .08s,background .08s;}
 .em-labels{display:flex;justify-content:space-between;font-size:8px;color:var(--sub);}
 .em-score{font-size:17px;font-weight:800;margin-top:2px;}
-
-.chart-wrap.danger-high::after{content:'⚠ BARRIER DANGER';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--red);background:#ff3d7108;border:2px solid var(--red);border-radius:4px;animation:dangerFlash .25s infinite;z-index:5;pointer-events:none;opacity:0;}
+.chart-wrap.danger-high::after{content:'BARRIER DANGER';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:var(--red);background:#ff3d7108;border:2px solid var(--red);border-radius:4px;animation:dangerFlash .25s infinite;z-index:5;pointer-events:none;opacity:0;}
 .chart-wrap.danger-high.show-danger::after{opacity:1;}
 @keyframes dangerFlash{0%,100%{border-color:#ff3d71;}50%{border-color:#ff3d7100;}}
 
@@ -405,7 +401,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 </head>
 <body>
 
-<!-- LOGIN OVERLAY -->
 <div class="login-overlay" id="loginOverlay">
   <div class="login-card">
     <div class="login-logo">🎯</div>
@@ -467,9 +462,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <div class="layout">
   <div class="panel-overlay" id="panelOverlay"></div>
 
-  <!-- LEFT PANEL -->
   <div class="left" id="leftPanel">
-
     <div class="sec" id="userSection" style="display:none;">
       <div class="user-card">
         <div class="user-row">
@@ -481,8 +474,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
         </div>
         <div class="user-bal-lbl" style="margin-top:7px;">Balance</div>
         <div class="user-bal" id="userBal">—</div>
-
-        <!-- ACCOUNT SWITCHER -->
         <div class="acct-switcher" id="acctSwitcher" style="display:none;">
           <div class="acct-switcher-lbl">🔄 Switch Account</div>
           <div class="acct-drop-wrap">
@@ -499,7 +490,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
             <div class="acct-menu" id="acctMenu"></div>
           </div>
         </div>
-
         <button class="btn-logout" id="logoutBtn">✕ Logout</button>
       </div>
     </div>
@@ -513,7 +503,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
         <div class="ai-head-row">
           <div class="brain">🧠</div>
           <div class="brain-info">
-            <div class="t">Neural Exit Sniper v7</div>
+            <div class="t">Neural Exit Sniper v8</div>
             <div class="s">100-tick · Auto-volatility · Voice AI</div>
           </div>
         </div>
@@ -541,7 +531,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
           <div class="aistat" style="text-align:center;"><div class="n" id="stWins" style="color:var(--green);">0</div><div class="l">Wins</div></div>
           <div class="aistat" style="text-align:center;"><div class="n" id="stLoss" style="color:var(--red);">0</div><div class="l">Loss</div></div>
           <div class="aistat" style="text-align:center;"><div class="n" id="stWR" style="color:var(--gold);">—</div><div class="l">Win%</div></div>
-          <div class="aistat" style="text-align:center;"><div class="n" id="stPnl" style="color:var(--green);">$0</div><div class="l">P&L</div></div>
+          <div class="aistat" style="text-align:center;"><div class="n" id="stPnl" style="color:var(--green);">$0</div><div class="l">P&amp;L</div></div>
         </div>
       </div>
     </div>
@@ -600,7 +590,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
     </div>
   </div>
 
-  <!-- CENTER -->
   <div class="center">
     <div class="chart-top">
       <div style="display:flex;align-items:center;gap:6px;min-width:0;">
@@ -642,12 +631,11 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
     </div>
   </div>
 
-  <!-- RIGHT PANEL -->
   <div class="right" id="rightPanel">
     <div class="stat-grid">
       <div class="scard"><div class="sl">Ticks</div><div class="sv" id="sTicks" style="color:var(--blue);">0</div></div>
       <div class="scard"><div class="sl">Growth</div><div class="sv" id="sGrowth" style="color:var(--green);">2%</div></div>
-      <div class="scard"><div class="sl">P&L</div><div class="sv" id="sPnl">$0.00</div></div>
+      <div class="scard"><div class="sl">P&amp;L</div><div class="sv" id="sPnl">$0.00</div></div>
       <div class="scard"><div class="sl">Payout</div><div class="sv" id="sPayout" style="color:var(--gold);">$0.00</div></div>
     </div>
     <div style="padding:0 9px 5px;"><div class="sec-title">Active Contract</div></div>
@@ -684,7 +672,6 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   <button class="bnav-btn" id="bnVoice"><span>🎤</span><span>ARIA</span></button>
 </div>
 
-<!-- VOICE PANEL -->
 <div class="voice-panel" id="voicePanel">
   <div class="vp-hdr">
     <div class="vp-hdr-left">
@@ -707,11 +694,10 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 </div>
 <button class="voice-fab" id="voiceFab">🎤</button>
 
-<!-- SCAN MODAL -->
 <div class="scan-overlay" id="scanOverlay">
   <div class="scan-modal">
     <h3>🔭 Scanning Volatility Indices…</h3>
-    <p>Analyzing stability, barrier longevity & momentum for each market</p>
+    <p>Analyzing stability, barrier longevity and momentum for each market</p>
     <div class="scan-progress"><div class="scan-progress-fill" id="scanProgressFill"></div></div>
     <div class="scan-results" id="scanResults"></div>
     <button class="scan-close" id="scanClose">✕ Close</button>
@@ -724,62 +710,44 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <div class="win-flash" id="flashWin"><span>✅</span><span id="flashWinTxt">WIN!</span></div>
 
 <script>
-// ═══════════════════════════════════════════
-// CONFIG
-// ═══════════════════════════════════════════
-const APP_ID = '129093';
-const WS_URL = 'wss://ws.binaryws.com/websockets/v3?app_id=' + APP_ID;
-const OAUTH_URL = 'https://oauth.deriv.com/oauth2/authorize?app_id=' + APP_ID + '&l=EN&brand=deriv';
-const TICK_BUF = 100;
-const MAX_FEED = 40;
-const ALL_SYMS = [
+// ═══ CONFIG ═══
+const APP_ID='129093';
+const WS_URL='wss://ws.binaryws.com/websockets/v3?app_id='+APP_ID;
+const OAUTH_URL='https://oauth.deriv.com/oauth2/authorize?app_id='+APP_ID+'&l=EN&brand=deriv';
+const TICK_BUF=100,MAX_FEED=40;
+const ALL_SYMS=[
   {sym:'R_10',dp:3,name:'V10'},{sym:'R_25',dp:3,name:'V25'},
   {sym:'R_50',dp:4,name:'V50'},{sym:'R_75',dp:4,name:'V75'},
-  {sym:'R_100',dp:2,name:'V100'},
+  {sym:'R_100',dp:2,name:'V100'}
 ];
-const CRYPTO_CURRENCIES = ['BTC','ETH','USDT','tUSDT','eUSDT','LTC','XRP'];
+const CRYPTO_CURRENCIES=['BTC','ETH','USDT','tUSDT','eUSDT','LTC','XRP'];
 
-// ═══════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════
+// ═══ STATE ═══
 const $=id=>document.getElementById(id);
-let ws=null, wsAlive=false, pingTimer=null, pingT=0, lat=0;
-let reconnDelay=800, reconnTimer=null, connTO=null, appReady=false;
-let heartbeatTimer=null;
-let sym='R_10', dp=3, gr=2, stake=10, tp=null;
-let activeToken='', authed=false, userInfo={}, userCurrency='USD';
+let ws=null,wsAlive=false,pingTimer=null,pingT=0,lat=0;
+let reconnDelay=800,reconnTimer=null,connTO=null,appReady=false,heartbeatTimer=null;
+let sym='R_10',dp=3,gr=2,stake=10,tp=null;
+let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false;
-// Multi-account: store as {loginid -> {token, currency, is_virtual, account_type}}
-let tokenStore={};
-let accountList=[];
-let activeLoginid='';
-let priceHist=[], tickBuf=[], prevP=null;
-let hi=-Infinity, lo=Infinity;
-let symBufs={};
-let chart=null, area=null, lineU=null, lineL=null, lineE=null;
-let con=null, exitingNow=false;
-let realBalance=null;
-let aiOn=false, aiWins=0, aiLoss=0, aiTrades=0, aiPnl=0;
-let aiCool=false, phase='IDLE', scanAnim=0, exitProbability=0;
-let volScores={}, lastVolAutoSwitch=0;
-let ticksHeld=0;
-const MIN_HOLD=6, EXIT_THRESH=50;
-let voiceRunning=false, voiceOpen=false, isSpeaking=false;
-let recognition=null, ariaVoice=null, voiceRestartTimer=null;
+let tokenStore={},accountList=[],activeLoginid='';
+let priceHist=[],tickBuf=[],prevP=null;
+let hi=-Infinity,lo=Infinity,symBufs={};
+let chart=null,area=null,lineU=null,lineL=null,lineE=null;
+let con=null,exitingNow=false,realBalance=null;
+let aiOn=false,aiWins=0,aiLoss=0,aiTrades=0,aiPnl=0;
+let aiCool=false,phase='IDLE',scanAnim=0,exitProbability=0;
+let volScores={},lastVolAutoSwitch=0,ticksHeld=0;
+const MIN_HOLD=6,EXIT_THRESH=50;
+let voiceRunning=false,voiceOpen=false,isSpeaking=false;
+let recognition=null,ariaVoice=null,voiceRestartTimer=null;
 const synth=window.speechSynthesis;
 
-// ═══════════════════════════════════════════
-// STORAGE — safe wrappers for mobile
-// ═══════════════════════════════════════════
+// ═══ SAFE STORAGE ═══
 function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 function lsDel(k){try{localStorage.removeItem(k);}catch(e){}}
-function ssGet(k){try{return sessionStorage.getItem(k);}catch(e){return null;}}
-function ssSet(k,v){try{sessionStorage.setItem(k,v);}catch(e){}}
 
-// ═══════════════════════════════════════════
-// UTILS
-// ═══════════════════════════════════════════
+// ═══ UTILS ═══
 const now=()=>Date.now();
 function toast(msg,col,dur){
   const t=$('toast');t.textContent=msg;
@@ -796,88 +764,89 @@ function flashBalance(){
   const el=$('hBalance');el.classList.remove('bal-flash');void el.offsetWidth;el.classList.add('bal-flash');
   setTimeout(()=>el.classList.remove('bal-flash'),700);
 }
-function setDot(s){
-  $('wsDot').className='ws-dot '+(s==='on'?'on':s==='err'?'err':'rc');
-}
+function setDot(s){$('wsDot').className='ws-dot '+(s==='on'?'on':s==='err'?'err':'rc');}
 
-// ═══════════════════════════════════════════
-// OAUTH — Parse ALL tokens from URL
-// ═══════════════════════════════════════════
+// ═══ OAUTH — Parse ALL tokens ═══
 function parseOAuthURL(){
   const p=new URLSearchParams(window.location.search);
-  const found={};
-  let firstToken=null;
+  const found={};let firstToken=null,firstLoginid='';
   for(let i=1;i<=10;i++){
-    const tok=p.get('token'+i);
-    const acct=p.get('acct'+i);
-    const cur=p.get('cur'+i);
+    const tok=p.get('token'+i),acct=p.get('acct'+i),cur=p.get('cur'+i);
     if(tok&&acct){
+      // Store as flat string token for simplicity + metadata separately
       found[acct]={token:tok,currency:cur||'USD'};
-      if(!firstToken)firstToken=tok;
+      if(!firstToken){firstToken=tok;firstLoginid=acct;}
     }
   }
-  return{tokens:found,first:firstToken};
+  return{tokens:found,first:firstToken,firstLoginid};
+}
+function loadTokenStore(){try{const s=lsGet('deriv_ts');if(s)tokenStore=JSON.parse(s);}catch(e){tokenStore={};}}
+function saveTokenStore(){lsSet('deriv_ts',JSON.stringify(tokenStore));}
+function getStoredToken(loginid){
+  if(!loginid)return '';
+  const s=tokenStore[loginid];
+  if(!s)return '';
+  if(typeof s==='string')return s;
+  if(typeof s==='object'&&s.token)return s.token;
+  return '';
 }
 
-function loadTokenStore(){
-  try{const s=lsGet('deriv_ts');if(s)tokenStore=JSON.parse(s);}catch(e){tokenStore={};}
-}
-function saveTokenStore(){
-  lsSet('deriv_ts',JSON.stringify(tokenStore));
-}
-
-// ═══════════════════════════════════════════
-// INIT — check URL for OAuth tokens first
-// ═══════════════════════════════════════════
+// ═══ INIT — bulletproof login restore ═══
 (function init(){
   loadTokenStore();
 
-  // Check OAuth redirect
-  const {tokens,first}=parseOAuthURL();
-  if(first){
-    // Merge all new tokens into tokenStore
-    Object.assign(tokenStore,tokens);
+  // STEP 1: Fresh OAuth redirect — URL has token params
+  const {tokens,first,firstLoginid}=parseOAuthURL();
+  if(first&&firstLoginid){
+    // Merge ALL new tokens into store
+    Object.keys(tokens).forEach(lid=>{
+      tokenStore[lid]=tokens[lid];
+    });
     saveTokenStore();
-    // Clear URL without reload
-    try{history.replaceState({},'',location.pathname);}catch(e){}
-    // Set the first account as active loginid immediately
-    const firstLoginid=Object.keys(tokens)[0]||'';
+    // Save active account
     activeToken=first;
     activeLoginid=firstLoginid;
-    if(firstLoginid){
-      lsSet('deriv_active',firstLoginid);
-    }
+    lsSet('deriv_active',firstLoginid);
+    // Clear URL params without triggering reload
+    try{
+      const clean=location.protocol+'//'+location.host+location.pathname;
+      window.history.replaceState({path:clean},'',clean);
+    }catch(e){}
     hideLogin();
     return;
   }
 
-  // Check stored active token
-  const storedActive=lsGet('deriv_active');
-  if(storedActive&&tokenStore[storedActive]&&tokenStore[storedActive].token){
-    activeToken=tokenStore[storedActive].token;
-    activeLoginid=storedActive;
-    hideLogin();
-    return;
+  // STEP 2: Restore previously active account
+  const storedActive=lsGet('deriv_active')||'';
+  if(storedActive&&storedActive.length>2){
+    const tok=getStoredToken(storedActive);
+    if(tok&&tok.length>10){
+      activeToken=tok;
+      activeLoginid=storedActive;
+      hideLogin();
+      return;
+    }
   }
-  // Check any token in store (fallback)
-  const keys=Object.keys(tokenStore).filter(k=>tokenStore[k]&&tokenStore[k].token);
-  if(keys.length>0){
-    const k=keys[0];
-    activeToken=tokenStore[k].token;
-    activeLoginid=k;
-    lsSet('deriv_active',k);
-    hideLogin();
-    return;
+
+  // STEP 3: Try any stored account as fallback
+  const keys=Object.keys(tokenStore).filter(k=>k&&k.length>2);
+  for(let i=0;i<keys.length;i++){
+    const tok=getStoredToken(keys[i]);
+    if(tok&&tok.length>10){
+      activeToken=tok;
+      activeLoginid=keys[i];
+      lsSet('deriv_active',keys[i]);
+      hideLogin();
+      return;
+    }
   }
-  // Show login
+
+  // STEP 4: No valid session found
   showLogin();
 })();
 
 function showLogin(){
   $('loginOverlay').style.display='flex';
-  // Ensure login button always has correct href (in case of any override)
-  const lb=$('loginBtn');
-  if(lb)lb.href=OAUTH_URL;
 }
 function hideLogin(){
   $('loginOverlay').style.display='none';
@@ -885,16 +854,14 @@ function hideLogin(){
 }
 
 $('demoBtn').addEventListener('click',()=>{
-  activeToken='';
+  activeToken='';activeLoginid='';
   $('loginOverlay').style.display='none';
   bootApp();
   toast('👁 Demo Mode — simulated trades only','',5000);
   setTimeout(()=>ariaSpeak('Welcome to demo mode! I am ARIA. Enable the AI Sniper to begin.'),1200);
 });
 
-// ═══════════════════════════════════════════
-// BOOT
-// ═══════════════════════════════════════════
+// ═══ BOOT ═══
 function bootApp(){
   if(appReady)return;
   appReady=true;
@@ -905,124 +872,70 @@ function bootApp(){
   updatePhaseUI();
   setupMobile();
   setupEvents();
-  // CONNECT — single call
   connect();
-  // Timers
   setInterval(()=>{if(con)updateConUI();},900);
   setInterval(()=>$('sbTime').textContent=new Date().toLocaleTimeString(),1000);
-  // Network
   window.addEventListener('online',()=>{toast('🌐 Back online','g');reconnDelay=800;connect();});
-  window.addEventListener('offline',()=>{toast('⚠ Offline','r');setDot('err');});
-  // Mobile: reconnect on tab focus (critical for mobile browsers)
+  window.addEventListener('offline',()=>{toast('Offline','r');setDot('err');});
   document.addEventListener('visibilitychange',()=>{
-    if(!document.hidden){
-      if(!wsAlive||!ws||ws.readyState!==1){reconnDelay=800;connect();}
-    }
+    if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}
   });
-  // Mobile: reconnect on touch/interaction if disconnected
   document.addEventListener('touchstart',()=>{
     if(!wsAlive&&appReady){reconnDelay=800;connect();}
   },{passive:true});
-  // ARIA voice
   setTimeout(()=>{
     startListen();
     toast('🎤 ARIA always listening — EN & Kiswahili','p',5000);
   },2000);
-  // Auto vol scan every 4 min
   setInterval(()=>{
     if(!aiOn||con)return;
     if(now()-lastVolAutoSwitch>4*60*1000)runVolScan(true);
   },60000);
 }
 
-// ═══════════════════════════════════════════
-// WEBSOCKET — rock solid mobile-compatible
-// ═══════════════════════════════════════════
+// ═══ WEBSOCKET ═══
 function connect(){
   clearTimeout(reconnTimer);clearTimeout(connTO);
   clearInterval(pingTimer);clearInterval(heartbeatTimer);
-  if(ws){
-    try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}
-    ws=null;
-  }
+  if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}ws=null;}
   wsAlive=false;setDot('rc');
   $('connBanner').classList.add('show');
-
   try{ws=new WebSocket(WS_URL);}catch(e){schedReconn();return;}
-
-  // Connection timeout — 12s on mobile networks
-  connTO=setTimeout(()=>{
-    if(!wsAlive){
-      try{ws.close();}catch(e){}
-      schedReconn();
-    }
-  },12000);
-
+  connTO=setTimeout(()=>{if(!wsAlive){try{ws.close();}catch(e){}schedReconn();}},12000);
+  let lastMsg=now();
   ws.onopen=()=>{
     clearTimeout(connTO);
     wsAlive=true;reconnDelay=800;
-    setDot('on');
-    $('connBanner').classList.remove('show');
-
-    // Authorize if token available
-    if(activeToken){
-      ws.send(JSON.stringify({authorize:activeToken}));
-    }
-
-    // Subscribe ticks for ALL symbols (needed for vol scanner)
-    ALL_SYMS.forEach(s=>{
-      ws.send(JSON.stringify({ticks:s.sym,subscribe:1}));
-    });
-
-    // Ping every 4s
+    setDot('on');$('connBanner').classList.remove('show');
+    if(activeToken)ws.send(JSON.stringify({authorize:activeToken}));
+    ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
     pingTimer=setInterval(()=>{
       if(ws&&ws.readyState===1){pingT=now();ws.send(JSON.stringify({ping:1}));}
-      else{clearInterval(pingTimer);}
+      else clearInterval(pingTimer);
     },4000);
-
-    // Heartbeat: reconnect if no message in 30s (mobile background killer)
-    let lastMsg=now();
     clearInterval(heartbeatTimer);
     heartbeatTimer=setInterval(()=>{
-      if(now()-lastMsg>30000&&wsAlive){
-        console.log('Heartbeat timeout — reconnecting');
-        connect();
-      }
+      if(now()-lastMsg>30000&&wsAlive){connect();}
     },10000);
-    ws._lastMsg=()=>{lastMsg=now();};
   };
-
   ws.onmessage=e=>{
-    if(ws&&ws._lastMsg)ws._lastMsg();
+    lastMsg=now();
     try{handle(JSON.parse(e.data));}catch(err){}
   };
-
   ws.onerror=()=>{clearTimeout(connTO);};
-
   ws.onclose=e=>{
     clearTimeout(connTO);clearInterval(pingTimer);clearInterval(heartbeatTimer);
-    wsAlive=false;setDot('rc');
-    $('connBanner').classList.add('show');
+    wsAlive=false;setDot('rc');$('connBanner').classList.add('show');
     if(e.code!==1000)schedReconn();
   };
 }
-
 function schedReconn(){
   clearTimeout(reconnTimer);
-  reconnTimer=setTimeout(()=>{
-    reconnDelay=Math.min(reconnDelay*1.5,15000);
-    connect();
-  },reconnDelay);
+  reconnTimer=setTimeout(()=>{reconnDelay=Math.min(reconnDelay*1.5,15000);connect();},reconnDelay);
 }
+function send(obj){if(ws&&ws.readyState===1){ws.send(JSON.stringify(obj));return true;}return false;}
 
-function send(obj){
-  if(ws&&ws.readyState===1){ws.send(JSON.stringify(obj));return true;}
-  return false;
-}
-
-// ═══════════════════════════════════════════
-// MESSAGE HANDLER
-// ═══════════════════════════════════════════
+// ═══ MESSAGE HANDLER ═══
 function handle(d){
   if(!d||!d.msg_type)return;
   const t=d.msg_type;
@@ -1037,60 +950,74 @@ function handle(d){
 
   if(t==='authorize'){
     if(d.error){
-      toast('❌ Auth error: '+(d.error.message||'Invalid token'),'r',6000);
-      // Token may be expired — clear it
-      if(activeLoginid&&tokenStore[activeLoginid]){
-        delete tokenStore[activeLoginid];saveTokenStore();
-      }
+      const ec=d.error.code||'',em=d.error.message||'';
+      toast('Auth: '+(em||ec),'r',5000);
       authed=false;
+      // ONLY delete token if Deriv explicitly says it's invalid — not on network errors
+      const hardFail=['InvalidToken','AuthorizationRequired','InvalidAppID'];
+      if(hardFail.includes(ec)){
+        if(activeLoginid&&tokenStore[activeLoginid]){
+          delete tokenStore[activeLoginid];
+          saveTokenStore();
+          lsDel('deriv_active');
+        }
+        // Retry once before showing login
+        if(!window._authRetried){
+          window._authRetried=true;
+          setTimeout(()=>connect(),2000);
+        } else {
+          window._authRetried=false;
+          showLogin();
+        }
+      } else {
+        // Soft error — retry auth after delay
+        setTimeout(()=>{
+          if(ws&&ws.readyState===1&&activeToken){
+            ws.send(JSON.stringify({authorize:activeToken}));
+          } else {
+            connect();
+          }
+        },3000);
+      }
       return;
     }
     authed=true;
+    window._authRetried=false;
     const a=d.authorize;
-    // Always use the loginid from the authorize response — it is authoritative
     const realLoginid=a.loginid||activeLoginid;
+    // Update activeLoginid to the server-confirmed loginid
     activeLoginid=realLoginid;
     userCurrency=a.currency||'USD';
     userInfo={name:a.fullname||a.loginid||'Trader',loginid:realLoginid,currency:userCurrency};
     realBalance=a.balance!==undefined?parseFloat(a.balance):null;
 
-    // Save this token mapped to the real loginid — critical: never save to empty key
-    if(realLoginid){
+    // ALWAYS save token — this is the confirmed working token
+    if(realLoginid&&realLoginid.length>2&&activeToken&&activeToken.length>10){
       tokenStore[realLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual,account_type:a.account_type||'real'};
       lsSet('deriv_active',realLoginid);
       saveTokenStore();
     }
 
-    // Build account list from account_list field
+    // Build account list
     if(a.account_list&&a.account_list.length){
       accountList=a.account_list.map(ac=>{
-        const stored=tokenStore[ac.loginid];
+        const tok=getStoredToken(ac.loginid);
         return{
-          loginid:ac.loginid,
-          currency:ac.currency||'USD',
-          is_virtual:!!ac.is_virtual,
-          account_type:ac.account_type||'real',
-          token:stored?stored.token:'',
-          balance:ac.loginid===activeLoginid?realBalance:null,
+          loginid:ac.loginid,currency:ac.currency||'USD',
+          is_virtual:!!ac.is_virtual,account_type:ac.account_type||'real',
+          token:tok,balance:ac.loginid===realLoginid?realBalance:null
         };
       });
     } else {
-      accountList=[{loginid:activeLoginid,currency:userCurrency,is_virtual:!!a.is_virtual,account_type:a.account_type||'real',token:activeToken,balance:realBalance}];
+      accountList=[{loginid:realLoginid,currency:userCurrency,is_virtual:!!a.is_virtual,account_type:a.account_type||'real',token:activeToken,balance:realBalance}];
     }
 
-    updateBalanceUI();
-    showUserCard();
-    renderAcctMenu();
-
+    updateBalanceUI();showUserCard();renderAcctMenu();
     $('sbAuth').textContent=(a.is_virtual?'Demo':'Live')+':'+a.loginid;
     $('sbAuth').style.color=a.is_virtual?'var(--gold)':'var(--green)';
     $('hPnlBadge').style.display='flex';
-
-    // Subscribe balance updates
     send({balance:1,subscribe:1});
-    // Check existing open positions
     send({portfolio:1,contract_type:['ACCU']});
-
     const bStr=userCurrency+' '+(realBalance||0).toFixed(2);
     toast('✅ '+(a.is_virtual?'Demo':'Live')+' · '+userInfo.name+' · '+bStr,'g',4000);
     ariaSpeak('Welcome '+userInfo.name.split(' ')[0]+'! Balance '+bStr+'. AI Sniper ready.');
@@ -1128,7 +1055,7 @@ function handle(d){
     if(d.error)return;
     const open=((d.portfolio&&d.portfolio.contracts)||[]).filter(c=>c.contract_type==='ACCU');
     if(open.length>0){
-      toast('⚠ Found '+open.length+' open ACCU — clearing…','y',5000);
+      toast('Found '+open.length+' open ACCU — clearing…','y',5000);
       open.forEach(c=>send({sell:c.contract_id,price:0}));
       con=null;clearBarriers();renderNoContract();isBuying=false;aiCool=false;
     }
@@ -1140,12 +1067,12 @@ function handle(d){
     if(d.error){
       const ec=d.error.code||'',em=d.error.message||'';
       if(ec==='TooManyOpenPositions'||em.toLowerCase().includes('too many')){
-        toast('⚠ Position exists — clearing…','y',4000);
+        toast('Position exists — clearing…','y',4000);
         con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);
         aiCool=true;send({portfolio:1,contract_type:['ACCU']});
         setTimeout(()=>{aiCool=false;isBuying=false;},8000);
       } else {
-        toast('❌ Buy: '+em,'r',5000);
+        toast('Buy error: '+em,'r',5000);
         con=null;clearBarriers();renderNoContract();
       }
       return;
@@ -1172,10 +1099,12 @@ function handle(d){
           con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);
           $('exitMeter').classList.remove('on');
         }
-      } else toast('⚠ Sell: '+d.error.message,'y',4000);
+      } else {
+        toast('Sell error: '+(d.error.message||''),'y',4000);
+      }
     } else {
       const sf=d.sell&&d.sell.sold_for!==undefined?parseFloat(d.sell.sold_for):null;
-      if(sf!==null)toast('✅ Sold '+userCurrency+' '+sf.toFixed(2)+' (P&L '+(sf-stake>=0?'+':'')+(sf-stake).toFixed(2)+')','g',5000);
+      if(sf!==null)toast('✅ Sold '+userCurrency+' '+sf.toFixed(2),'g',5000);
     }
     return;
   }
@@ -1193,17 +1122,12 @@ function handle(d){
     }
     return;
   }
-
-  if(t==='forget'||t==='forget_all')return;
 }
 
-// ═══════════════════════════════════════════
-// BALANCE & USER UI
-// ═══════════════════════════════════════════
+// ═══ BALANCE & USER UI ═══
 function updateBalanceUI(){
   const v=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
-  $('hBalance').textContent=v;
-  $('userBal').textContent=v;
+  $('hBalance').textContent=v;$('userBal').textContent=v;
 }
 function showUserCard(){
   $('userSection').style.display='block';
@@ -1211,17 +1135,12 @@ function showUserCard(){
   $('userUid').textContent=userInfo.loginid||'—';
 }
 
-// ═══════════════════════════════════════════
-// ACCOUNT SWITCHER — works without re-login
-// ═══════════════════════════════════════════
+// ═══ ACCOUNT SWITCHER ═══
 function renderAcctMenu(){
   if(!accountList||accountList.length<2){$('acctSwitcher').style.display='none';return;}
   $('acctSwitcher').style.display='block';
   const cur=accountList.find(a=>a.loginid===activeLoginid)||accountList[0];
-
-  // Update current display
-  const isV=cur.is_virtual;
-  const isCr=CRYPTO_CURRENCIES.includes(cur.currency);
+  const isV=cur.is_virtual,isCr=CRYPTO_CURRENCIES.includes(cur.currency);
   const tBg=isV?'#1e2736':isCr?'#1a0d2e':'#003d1a';
   const tCl=isV?'#7d8fa3':isCr?'#c084fc':'#00e676';
   const tLb=isV?'DEMO':isCr?'CRYPTO':'REAL';
@@ -1229,61 +1148,49 @@ function renderAcctMenu(){
   $('acctCurTag').style.cssText='background:'+tBg+';color:'+tCl;
   $('acctCurName').textContent=cur.loginid;
   $('acctCurBal').textContent=cur.balance!=null?cur.currency+' '+parseFloat(cur.balance).toFixed(2):'—';
-
-  // Build items
   $('acctMenu').innerHTML=accountList.map(a=>{
     const iv=a.is_virtual,ic=CRYPTO_CURRENCIES.includes(a.currency);
     const tc=iv?'tag-demo':ic?'tag-crypto':'tag-real';
     const tn=iv?'DEMO':ic?'CRYPTO':'REAL';
     const isAct=a.loginid===activeLoginid;
-    const storedTk=tokenStore[a.loginid];
-    const hasTok=!!(storedTk&&(typeof storedTk==='string'?storedTk:storedTk.token));
+    const hasTok=!!getStoredToken(a.loginid);
     const bal=a.balance!=null?a.currency+' '+parseFloat(a.balance).toFixed(2):'—';
-    return`<div class="acct-menu-item${isAct?' active-acct':''}" data-lid="${a.loginid}" style="${!hasTok?'opacity:.55;':''}" onclick="switchAccount('${a.loginid}')">
-      <span class="acct-menu-tag ${tc}">${tn}</span>
-      <div class="acct-menu-info">
-        <div class="acct-menu-id">${a.loginid}</div>
-        <div class="acct-menu-cur">${a.currency}${!hasTok?' · re-login needed':''}</div>
-      </div>
-      <span class="acct-menu-bal">${bal}</span>
-      <span class="acct-check">✓</span>
-    </div>`;
+    return '<div class="acct-menu-item'+(isAct?' active-acct':'')+'" style="'+(hasTok?'':'opacity:.55;')+'" onclick="switchAccount(\''+a.loginid+'\')">'+
+      '<span class="acct-menu-tag '+tc+'">'+tn+'</span>'+
+      '<div class="acct-menu-info"><div class="acct-menu-id">'+a.loginid+'</div><div class="acct-menu-cur">'+a.currency+(hasTok?'':' · re-login needed')+'</div></div>'+
+      '<span class="acct-menu-bal">'+bal+'</span>'+
+      '<span class="acct-check">✓</span></div>';
   }).join('');
 }
 
-// Toggle dropdown
 $('acctDropBtn').addEventListener('click',()=>{
-  const m=$('acctMenu');
-  const open=m.classList.toggle('open');
+  const m=$('acctMenu'),open=m.classList.toggle('open');
   $('acctArrow').textContent=open?'▲':'▼';
   if(open)setTimeout(()=>document.addEventListener('click',closeAcctMenu,{once:true,capture:true}),10);
 });
-function closeAcctMenu(){
-  $('acctMenu').classList.remove('open');$('acctArrow').textContent='▼';
-}
+function closeAcctMenu(){$('acctMenu').classList.remove('open');$('acctArrow').textContent='▼';}
 
 function switchAccount(loginid){
   closeAcctMenu();
   if(loginid===activeLoginid){toast('Already on this account','');return;}
-  // Resolve token — handle both flat string and {token:...} object formats
-  const stored=tokenStore[loginid];
-  const tok=stored?(typeof stored==='string'?stored:stored.token):'';
-  if(!tok){
-    // No token for this account — redirect to OAuth to get all tokens at once
-    toast('🔑 Re-login needed for '+loginid,'p',4000);
-    ariaSpeak('Redirecting to login to get access for all accounts.');
-    setTimeout(()=>{window.location.href=OAUTH_URL;},1000);
+  const tok=getStoredToken(loginid);
+  if(!tok||tok.length<10){
+    // No token — need fresh OAuth to get all tokens again
+    toast('Need to re-login to get token for '+loginid,'p',4000);
+    ariaSpeak('Please login again to access all accounts.');
+    setTimeout(()=>{window.location.href=OAUTH_URL;},1200);
     return;
   }
-  // We have the token — switch directly without re-login
-  if(con)closeContract('Account switch',false);
+  if(con){try{closeContract('Account switch',false);}catch(e){}}
   activeToken=tok;
   activeLoginid=loginid;
-  authed=false;realBalance=null;
+  authed=false;
+  realBalance=null;
+  window._authRetried=false;
   lsSet('deriv_active',loginid);
   $('hBalance').textContent='Switching…';
   $('userBal').textContent='Switching…';
-  toast('🔄 Switching to '+loginid+'…','p',3000);
+  toast('Switching to '+loginid+'…','p',3000);
   ariaSpeak('Switching to '+loginid+'. One moment.');
   // Re-authorize on existing connection or reconnect
   if(ws&&ws.readyState===1){
@@ -1294,21 +1201,26 @@ function switchAccount(loginid){
 }
 
 function logout(){
-  lsDel('deriv_active');lsDel('deriv_ts');lsDel('deriv_accounts');tokenStore={};
-  activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];
-  if(con)closeContract('Logout',false);
+  // Clear ALL storage
+  lsDel('deriv_active');
+  lsDel('deriv_ts');
+  try{localStorage.clear();}catch(e){}
+  tokenStore={};activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];activeLoginid='';
+  window._authRetried=false;
+  if(con){try{closeContract('Logout',false);}catch(e){}}
+  clearTimeout(reconnTimer);clearTimeout(connTO);
+  clearInterval(pingTimer);clearInterval(heartbeatTimer);
   if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}}
   ws=null;wsAlive=false;appReady=false;
   $('userSection').style.display='none';
-  showLogin();
   $('acctSwitcher').style.display='none';
   $('hBalance').textContent='—';
+  $('sbAuth').textContent='Demo';$('sbAuth').style.color='var(--sub)';
   setDot('rc');
+  showLogin();
 }
 
-// ═══════════════════════════════════════════
-// CHART
-// ═══════════════════════════════════════════
+// ═══ CHART ═══
 function initChart(){
   const el=$('chart');
   if(chart){try{chart.remove();}catch(e){}}
@@ -1318,26 +1230,19 @@ function initChart(){
     crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
     rightPriceScale:{borderColor:'#1e2736',scaleMargins:{top:0.1,bottom:0.1}},
     timeScale:{borderColor:'#1e2736',timeVisible:true,secondsVisible:true,rightOffset:10},
-    handleScroll:true,handleScale:true,
+    handleScroll:true,handleScale:true
   });
   area=chart.addAreaSeries({
     lineColor:'#00b0ff',topColor:'#00b0ff22',bottomColor:'#00b0ff00',lineWidth:2,
     priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)},
-    lastValueVisible:true,priceLineVisible:true,
+    lastValueVisible:true,priceLineVisible:true
   });
-  const ro=new ResizeObserver(()=>{
-    if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});
-  });
+  const ro=new ResizeObserver(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});});
   ro.observe(el);
   setTimeout(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});},100);
 }
 function mkLine(color,title,style,width){
-  return chart.addLineSeries({
-    color,lineWidth:width||1,
-    lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,
-    lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,
-    priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)},
-  });
+  return chart.addLineSeries({color,lineWidth:width||1,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
 }
 function drawBarriers(){
   clearBarriers();if(!con||!chart)return;
@@ -1362,75 +1267,56 @@ function clearBarriers(){
   lineU=lineL=lineE=null;
 }
 
-// ═══════════════════════════════════════════
-// BARRIER DISTANCE
-// ═══════════════════════════════════════════
+// ═══ BARRIER DISTANCE ═══
 function barrierDist(p){
   const m={1:0.01516,2:0.02326,3:0.03121,4:0.03900,5:0.04663};
   return p*(m[gr]||0.02326);
 }
 
-// ═══════════════════════════════════════════
-// TICK PROCESSING
-// ═══════════════════════════════════════════
+// ═══ TICK PROCESSING ═══
 function processTick(tick){
   const p=parseFloat(tick.quote),t=tick.epoch;
   if(p>hi)hi=p;if(p<lo)lo=p;
   const chg=prevP!==null?p-prevP:0;
   const pct=prevP!==null?(chg/prevP)*100:0;
   const up=chg>=0;
-
-  $('priceEl').textContent=p.toFixed(dp);
-  $('priceEl').className='price-main '+(up?'up':'dn');
-  $('priceChg').textContent=(up?'+':'')+pct.toFixed(4)+'%';
-  $('priceChg').className='price-chg '+(up?'ub':'db');
-  $('metaH').textContent='H:'+hi.toFixed(dp);
-  $('metaL').textContent='L:'+lo.toFixed(dp);
+  $('priceEl').textContent=p.toFixed(dp);$('priceEl').className='price-main '+(up?'up':'dn');
+  $('priceChg').textContent=(up?'+':'')+pct.toFixed(4)+'%';$('priceChg').className='price-chg '+(up?'ub':'db');
+  $('metaH').textContent='H:'+hi.toFixed(dp);$('metaL').textContent='L:'+lo.toFixed(dp);
   $('mobPrice').textContent=sym+' '+p.toFixed(dp);
-
   const pt={time:t,value:p};
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
   try{area.update(pt);}catch(e){}
   appendBarrierPts(t);
-
-  tickBuf.push({p,t,chg,up});
-  if(tickBuf.length>TICK_BUF)tickBuf.shift();
+  tickBuf.push({p,t,chg,up});if(tickBuf.length>TICK_BUF)tickBuf.shift();
   $('infoBuf').textContent=tickBuf.length+'/100';
-  $('feedPulse').style.opacity='1';
-  setTimeout(()=>$('feedPulse').style.opacity='0.3',150);
+  $('feedPulse').style.opacity='1';setTimeout(()=>$('feedPulse').style.opacity='0.3',150);
 
   if(!con&&prevP!==null){
     const bd=barrierDist(p);
-    $('bUpper').textContent=(p+bd).toFixed(dp);
-    $('bLower').textContent=(p-bd).toFixed(dp);
-    $('bEntry').textContent='—';
-    $('infoBarrier').textContent='±'+bd.toFixed(dp);
+    $('bUpper').textContent=(p+bd).toFixed(dp);$('bLower').textContent=(p-bd).toFixed(dp);
+    $('bEntry').textContent='—';$('infoBarrier').textContent='±'+bd.toFixed(dp);
   }
 
   if(con&&!exitingNow){
     con.ticks++;ticksHeld++;
-    // Estimate P&L locally (overridden by POC subscription)
     if(!con.realId||con.pnl===0){
       const mult=Math.pow(1+gr/100,con.ticks)-1;
       con.pnl=+(con.stake*mult).toFixed(2);
       con.payout=+(con.stake+con.pnl).toFixed(2);
     }
-
     const dU=con.upper-p,dL=p-con.lower;
     const half=(con.upper-con.lower)/2;
     const nearDist=Math.min(dU,dL);
     const nearBar=dU<dL?con.upper:con.lower;
     const safetyPct=nearDist/half*100;
-
-    $('bUpper').textContent=con.upper.toFixed(dp);
-    $('bLower').textContent=con.lower.toFixed(dp);
+    $('bUpper').textContent=con.upper.toFixed(dp);$('bLower').textContent=con.lower.toFixed(dp);
     $('bEntry').textContent=con.entry.toFixed(dp);
     $('bSafety').textContent=safetyPct.toFixed(1)+'%';
     $('bSafety').style.color=safetyPct>55?'var(--green)':safetyPct>25?'var(--gold)':'var(--red)';
 
     const ep=computeExitProb(p,con,tickBuf);
     exitProbability=ep;updateExitMeter(ep);
-
     const hs=computeHoldScore(p,con,tickBuf);
     $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
     $('ovHold').textContent=hs+'%';$('ovHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
@@ -1440,14 +1326,14 @@ function processTick(tick){
     const pastMin=ticksHeld>=MIN_HOLD;
 
     // 7-LAYER SNIPER EXIT
-    const L1=p>=con.upper*0.9992||p<=con.lower*1.0008; // emergency edge
+    const L1=p>=con.upper*0.9992||p<=con.lower*1.0008;
     let L2=false;
     if(tickBuf.length>=2&&proxPct<12){
       const fv=tickBuf[tickBuf.length-1].p-tickBuf[tickBuf.length-2].p;
       L2=(nearBar===con.upper&&fv>0)||(nearBar===con.lower&&fv<0);
     }
-    const L3=pastMin&&proxPct<15; // proximity danger
-    const L4=pastMin&&ep>=EXIT_THRESH; // AI probability
+    const L3=pastMin&&proxPct<15;
+    const L4=pastMin&&ep>=EXIT_THRESH;
     let L5=false;
     if(pastMin&&tickBuf.length>=4){
       const v1=tickBuf[tickBuf.length-1].p-tickBuf[tickBuf.length-2].p;
@@ -1467,19 +1353,18 @@ function processTick(tick){
       }
       L6=sc>=3;
     }
-    const L7=pastMin&&hs<20&&proxPct<40; // hold critical
+    const L7=pastMin&&hs<20&&proxPct<40;
 
     const shouldExit=aiOn&&con.byAI&&(L1||L2||L3||L4||L5||L6||L7);
     if(shouldExit){
-      const reason=L1||L2?'⚡ Barrier edge!':L3?'Proximity '+proxPct.toFixed(0)+'%':L6?'3-tick streak':L5?'Velocity+accel':L7?'Hold critical':('Exit prob '+ep+'%');
+      const reason=L1||L2?'Barrier edge!':L3?'Proximity '+proxPct.toFixed(0)+'%':L6?'3-tick streak':L5?'Velocity+accel':L7?'Hold critical':'Exit prob '+ep+'%';
       sniperExit(p,ep,reason);
       prevP=p;addTickRow(p,chg,t);$('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
     }
-
     updateConUI();
     if(p>=con.upper||p<=con.lower){onKO(p);prevP=p;addTickRow(p,chg,t);return;}
-    if(tp&&con.pnl>=tp)sniperExit(p,0,'Take Profit ✅');
+    if(tp&&con.pnl>=tp)sniperExit(p,0,'Take Profit');
   }
 
   addTickRow(p,chg,t);prevP=p;
@@ -1487,9 +1372,7 @@ function processTick(tick){
   if(aiOn&&tickBuf.length>=15)runAI(p);
 }
 
-// ═══════════════════════════════════════════
-// EXIT PROBABILITY ENGINE v7
-// ═══════════════════════════════════════════
+// ═══ EXIT PROBABILITY ENGINE v8 ═══
 function computeExitProb(price,contract,buf){
   if(!contract||buf.length<3)return 0;
   let score=0;const n=buf.length;
@@ -1498,42 +1381,34 @@ function computeExitProb(price,contract,buf){
   const dU=upper-price,dL=price-lower;
   const nearDist=Math.min(dU,dL);
   const nearBar=dU<dL?upper:lower;
-
-  // F1 Proximity 0-45 exponential
   const proxR=1-(nearDist/half);
   score+=Math.max(0,Math.pow(proxR,1.5)*45);
-  // F2 Velocity 0-18
   const vp=Math.min(5,n-1),vel=buf[n-1].p-buf[n-1-vp].p;
   const mT=(nearBar===upper&&vel>0)||(nearBar===lower&&vel<0);
   if(mT)score+=Math.min(18,Math.abs(vel)/half*800);
-  // F3 Acceleration 0-15
   if(n>=4){
     const v1=buf[n-1].p-buf[n-2].p,v2=buf[n-2].p-buf[n-3].p,v3=buf[n-3].p-buf[n-4].p;
     const acc=v1-v2,aT=(nearBar===upper&&acc>0)||(nearBar===lower&&acc<0);
     if(aT)score+=Math.min(10,Math.abs(acc)/half*450);
     if((nearBar===upper&&acc>v2-v3)||(nearBar===lower&&acc<v2-v3))score+=5;
   }
-  // F4 Streak 0-12
   let str=0;
   for(let i=n-1;i>=Math.max(0,n-8);i--){
     const tw=(nearBar===upper&&buf[i].up)||(nearBar===lower&&!buf[i].up);
     if(tw)str++;else break;
   }
   score+=str*1.5;
-  // F5 Recent barrier test 0-8
   if(n>=5){
     const r5=buf.slice(n-5).map(b=>b.p);
     const rMax=Math.max(...r5),rMin=Math.min(...r5);
     if(nearBar===upper&&rMax/upper>0.9988)score+=8;
     if(nearBar===lower&&lower/rMin>0.9988)score+=8;
   }
-  // F6 Momentum convergence 0-6
   if(n>=12){
     const m1=buf.slice(n-6).reduce((a,b)=>a+b.p,0)/6;
     const m2=buf.slice(n-12,n-6).reduce((a,b)=>a+b.p,0)/6;
     if((nearBar===upper&&m1>m2)||(nearBar===lower&&m1<m2))score+=6;
   }
-  // Dampen if far
   if(nearDist>half*0.78)score=Math.min(score,16);
   if(nearDist>half*0.90)score=Math.min(score,4);
   return Math.min(100,Math.max(0,Math.round(score)));
@@ -1566,17 +1441,15 @@ function updateExitMeter(ep){
   pct.textContent=ep+'%';
   if(ep<30){sc.textContent='HOLD SAFE';sc.style.color='var(--green)';}
   else if(ep<50){sc.textContent='CAUTION';sc.style.color='var(--gold)';}
-  else if(ep<70){sc.textContent='⚠ DANGER';sc.style.color='var(--orange)';}
-  else{sc.textContent='🚨 EXIT!';sc.style.color='var(--red)';}
+  else if(ep<70){sc.textContent='DANGER';sc.style.color='var(--orange)';}
+  else{sc.textContent='EXIT!';sc.style.color='var(--red)';}
   $('exitMeter').classList.toggle('on',!!con);
   cw.classList.toggle('danger-high',ep>=70);
   cw.classList.toggle('show-danger',ep>=75);
 }
 
-// ═══════════════════════════════════════════
-// VOLATILITY SCANNER
-// ═══════════════════════════════════════════
-function scoreVol(sym,buf){
+// ═══ VOLATILITY SCANNER ═══
+function scoreVol(s,buf){
   if(!buf||buf.length<12)return{score:0,stability:0,momentum:0,trend:0};
   const m=Math.min(70,buf.length),prices=buf.slice(-m);
   const mean=prices.reduce((a,b)=>a+b,0)/m;
@@ -1600,36 +1473,31 @@ function runVolScan(silent){
     clearInterval(pi);$('scanProgressFill').style.width='100%';
     const results=ALL_SYMS.map(s=>{
       const sc=scoreVol(s.sym,symBufs[s.sym]||[]);
-      volScores[s.sym]=sc;return{...s,...sc};
+      volScores[s.sym]=sc;return Object.assign({},s,sc);
     }).sort((a,b)=>b.score-a.score);
-
     if(!silent){
       results.forEach((r,i)=>{
         const isW=i===0;
         const el=document.createElement('div');
         el.className='scan-result-item'+(isW?' winner':'');
-        el.innerHTML=`<div style="min-width:46px;"><div style="font-size:12px;font-weight:800;color:${isW?'var(--green)':'var(--text)'};">${isW?'🏆 ':''}${r.name}</div><div style="font-size:9px;color:var(--sub);">${r.sym}</div></div>
-          <div style="flex:1;padding:0 7px;">
-            <div class="sri-bar-row"><span class="sri-bar-lbl">Stability</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:${r.stability}%;background:var(--green);"></div></div><span style="font-size:9px;margin-left:3px;">${r.stability}%</span></div>
-            <div class="sri-bar-row"><span class="sri-bar-lbl">Trend</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:${r.trend}%;background:var(--blue);"></div></div><span style="font-size:9px;margin-left:3px;">${r.trend}%</span></div>
-            <div class="sri-bar-row"><span class="sri-bar-lbl">Momentum</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:${r.momentum}%;background:var(--purple);"></div></div><span style="font-size:9px;margin-left:3px;">${r.momentum}%</span></div>
-          </div>
-          <div style="text-align:right;"><div class="sri-score" style="color:${isW?'var(--green)':r.score>60?'var(--gold)':'var(--red)'};">${r.score}</div>
-          <div class="vol-badge ${isW?'best':r.score>60?'good':'bad'}">${isW?'BEST':r.score>60?'GOOD':'WEAK'}</div></div>`;
+        el.innerHTML='<div style="min-width:46px;"><div style="font-size:12px;font-weight:800;color:'+(isW?'var(--green)':'var(--text)')+';">'+(isW?'🏆 ':'')+r.name+'</div><div style="font-size:9px;color:var(--sub);">'+r.sym+'</div></div>'+
+          '<div style="flex:1;padding:0 7px;">'+
+          '<div class="sri-bar-row"><span class="sri-bar-lbl">Stability</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:'+r.stability+'%;background:var(--green);"></div></div><span style="font-size:9px;margin-left:3px;">'+r.stability+'%</span></div>'+
+          '<div class="sri-bar-row"><span class="sri-bar-lbl">Trend</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:'+r.trend+'%;background:var(--blue);"></div></div><span style="font-size:9px;margin-left:3px;">'+r.trend+'%</span></div>'+
+          '<div class="sri-bar-row"><span class="sri-bar-lbl">Momentum</span><div class="sri-bar-bg"><div class="sri-bar-fill" style="width:'+r.momentum+'%;background:var(--purple);"></div></div><span style="font-size:9px;margin-left:3px;">'+r.momentum+'%</span></div>'+
+          '</div><div style="text-align:right;"><div class="sri-score" style="color:'+(isW?'var(--green)':r.score>60?'var(--gold)':'var(--red)')+';">'+r.score+'</div>'+
+          '<div class="vol-badge '+(isW?'best':r.score>60?'good':'bad')+'">'+(isW?'BEST':r.score>60?'GOOD':'WEAK')+'</div></div>';
         el.addEventListener('click',()=>{switchSym(r.sym,r.dp);$('scanOverlay').classList.remove('open');toast('Switched to '+r.name,'g');ariaSpeak('Switched to '+r.name+'. Score '+r.score+'.');});
         $('scanResults').appendChild(el);
       });
     }
-
     renderVolSide(results);
-
-    // Auto-switch if AI on, no trade, best is different and score>55
     if(aiOn&&!con){
       const best=results[0];
       if(best&&best.sym!==sym&&best.score>55&&now()-lastVolAutoSwitch>90000){
         lastVolAutoSwitch=now();
         switchSym(best.sym,best.dp);
-        toast('🤖 AI → '+best.name+' ('+best.score+')','p');
+        toast('AI switched to '+best.name+' ('+best.score+')','p');
         ariaSpeak('Auto-switching to '+best.name+'. Stability '+best.stability+'%.');
       }
     }
@@ -1639,13 +1507,13 @@ function runVolScan(silent){
 function renderVolSide(results){
   const el=$('volScanList');
   if(!results||!results.length){el.innerHTML='<div style="text-align:center;color:var(--sub);font-size:10px;padding:6px;">Click SCAN…</div>';return;}
-  el.innerHTML=results.map((r,i)=>`
-    <div class="vol-item${i===0?' best':''}${r.sym===sym?' active-sym':''}" onclick="switchSym('${r.sym}',${r.dp});closeAllPanels();">
-      <span class="vol-name">${i===0?'🏆 ':''}<span style="color:${i===0?'var(--green)':r.sym===sym?'var(--blue)':'var(--text)'};">${r.name}</span></span>
-      <div class="vol-score-bar"><div class="vol-score-fill" style="width:${r.score}%;"></div></div>
-      <span class="vol-score-num" style="color:${i===0?'var(--green)':r.score>60?'var(--gold)':'var(--red)'};">${r.score}</span>
-      <span class="vol-badge ${i===0?'best':r.score>60?'good':'bad'}">${i===0?'BEST':r.score>60?'OK':'WEAK'}</span>
-    </div>`).join('');
+  el.innerHTML=results.map((r,i)=>
+    '<div class="vol-item'+(i===0?' best':'')+(r.sym===sym?' active-sym':'')+'" onclick="switchSym(\''+r.sym+'\','+r.dp+');closeAllPanels();">'+
+    '<span class="vol-name">'+(i===0?'🏆 ':'')+'<span style="color:'+(i===0?'var(--green)':r.sym===sym?'var(--blue)':'var(--text)')+';">'+r.name+'</span></span>'+
+    '<div class="vol-score-bar"><div class="vol-score-fill" style="width:'+r.score+'%;"></div></div>'+
+    '<span class="vol-score-num" style="color:'+(i===0?'var(--green)':r.score>60?'var(--gold)':'var(--red)')+';">'+r.score+'</span>'+
+    '<span class="vol-badge '+(i===0?'best':r.score>60?'good':'bad')+'">'+(i===0?'BEST':r.score>60?'OK':'WEAK')+'</span></div>'
+  ).join('');
 }
 
 function switchSym(newSym,newDp){
@@ -1657,15 +1525,11 @@ function switchSym(newSym,newDp){
   $('tickFeed').innerHTML='';$('sbSym').textContent=sym;
   if(ws&&ws.readyState===1){
     ws.send(JSON.stringify({forget_all:'ticks'}));
-    setTimeout(()=>{
-      if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
-    },500);
+    setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},500);
   }
 }
 
-// ═══════════════════════════════════════════
-// AI ENGINE
-// ═══════════════════════════════════════════
+// ═══ AI ENGINE ═══
 function runAI(price){
   const buf=tickBuf,n=buf.length;
   const sh=Math.min(8,n),lg=Math.min(50,n);
@@ -1700,7 +1564,7 @@ function runAI(price){
   $('iMom').textContent=(roc>=0?'+':'')+roc.toFixed(3)+'%';$('iMom').style.color=momUp?'var(--green)':'var(--red)';
   const rl=rsi.toFixed(1)+(rsiOS?' OS':rsiOB?' OB':'');
   $('iRsi').textContent=rl;$('iRsi').style.color=rsiOS?'var(--green)':rsiOB?'var(--red)':'var(--gold)';
-  $('iVol').textContent=lowVol?'LOW ✓':'MED/HI';$('iVol').style.color=lowVol?'var(--green)':'var(--red)';
+  $('iVol').textContent=lowVol?'LOW':'MED/HI';$('iVol').style.color=lowVol?'var(--green)':'var(--red)';
   $('iExit').textContent=er+'%';$('iExit').style.color=er<30?'var(--green)':er<65?'var(--gold)':'var(--red)';
 
   const boxCls=sig==='BUY'||sig==='IN TRADE'?'BUY':'WAIT';
@@ -1713,7 +1577,6 @@ function runAI(price){
   $('stPnl').textContent=(aiPnl>=0?'+':'')+aiPnl.toFixed(2);$('stPnl').style.color=aiPnl>=0?'var(--green)':'var(--red)';
   $('hWins').textContent=aiWins+'W';
   $('hPnl').textContent=(aiPnl>=0?'+$':'-$')+Math.abs(aiPnl).toFixed(2);$('hPnl').style.color=aiPnl>=0?'var(--green)':'var(--red)';
-
   $('ovTrend').textContent=tl;$('ovTrend').style.color=trendUp?'var(--green)':'var(--red)';
   $('ovRsi').textContent=rl;$('ovRsi').style.color=rsiOS?'var(--green)':rsiOB?'var(--red)':'var(--gold)';
   $('ovExitRisk').textContent=er+'%';$('ovExitRisk').style.color=er<30?'var(--green)':er<65?'var(--gold)':'var(--red)';
@@ -1724,14 +1587,12 @@ function runAI(price){
   if(now()-lastVolAutoSwitch>4*60*1000)runVolScan(true);
 }
 
-// ═══════════════════════════════════════════
-// ENTRY & EXIT
-// ═══════════════════════════════════════════
+// ═══ ENTRY & EXIT ═══
 function doEntry(price,score){
   if(con||aiCool||exitingNow||isBuying)return;
   aiCool=true;ticksHeld=0;phase='FIRE';updatePhaseUI();
-  showFlash('flashBuy','🎯 AI ENTRY @ '+price.toFixed(dp)+' ['+score+']',2000);
-  toast('🤖 Entering @ '+price.toFixed(dp),'p');
+  showFlash('flashBuy','AI ENTRY @ '+price.toFixed(dp)+' ['+score+']',2000);
+  toast('AI Entering @ '+price.toFixed(dp),'p');
   ariaSpeak('Entering trade. Watching for barrier danger.');
   buyContract(true);phase='IN_TRADE';updatePhaseUI();
   setTimeout(()=>{aiCool=false;},5000);
@@ -1740,7 +1601,7 @@ function doEntry(price,score){
 function sniperExit(price,ep,reason){
   if(!con||exitingNow)return;
   exitingNow=true;phase='EXITING';updatePhaseUI();
-  showFlash('flashExit','🚨 EXIT @ '+price.toFixed(dp)+' | '+reason,2500);
+  showFlash('flashExit','EXIT @ '+price.toFixed(dp)+' | '+reason,2500);
   $('chartWrap').classList.add('show-danger');
   ariaSpeak('Exiting. '+reason.replace(/[^\w\s%.]/g,''));
   closeContract(reason,true);
@@ -1749,64 +1610,54 @@ function sniperExit(price,ep,reason){
   updatePhaseUI();
 }
 
-// ═══════════════════════════════════════════
-// BUY CONTRACT
-// ═══════════════════════════════════════════
+// ═══ BUY CONTRACT ═══
 function buyContract(fromAI){
-  if(!wsAlive){toast('⚠ Not connected','r');return;}
-  if(con){toast('⚠ Already in trade','r');return;}
-  if(!prevP){toast('⚠ No price yet','y');return;}
-  if(isBuying){toast('⏳ Pending…','y');return;}
+  if(!wsAlive){toast('Not connected','r');return;}
+  if(con){toast('Already in trade','r');return;}
+  if(!prevP){toast('No price yet','y');return;}
+  if(isBuying){toast('Pending…','y');return;}
   const p=prevP,d=barrierDist(p);
   con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake,pnl:0,payout:stake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
   ticksHeld=0;drawBarriers();updateConUI();$('exitMeter').classList.add('on');
-  if(!fromAI)toast('✅ Contract @ '+p.toFixed(dp)+(con.isReal?' [REAL]':' [SIM]'),'g');
+  if(!fromAI)toast('Contract @ '+p.toFixed(dp)+(con.isReal?' [REAL]':' [SIM]'),'g');
   if(con.isReal){
     isBuying=true;setTimeout(()=>{isBuying=false;},12000);
     send({buy:'1',price:stake,parameters:{contract_type:'ACCU',symbol:sym,amount:stake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
   }
 }
 
-// ═══════════════════════════════════════════
-// CLOSE CONTRACT
-// ═══════════════════════════════════════════
+// ═══ CLOSE CONTRACT ═══
 function closeContract(reason,fromAI){
   if(!con)return;
   const pnl=con.pnl,tks=con.ticks,won=pnl>0,byAI=con.byAI;
   const realId=con.realId,isReal=con.isReal,stk=con.stake,payout=con.payout;
-
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
     aiTrades++;aiPnl=+(aiPnl+pnl).toFixed(2);
     addHistItem({won,pnl,reason,ticks:tks});
-    if(won)showFlash('flashWin','✅ WIN +$'+pnl.toFixed(2)+' ('+tks+'t)',2500);
+    if(won)showFlash('flashWin','WIN +$'+pnl.toFixed(2)+' ('+tks+'t)',2500);
   }
-
   if(isReal&&realId){
     send({sell:realId,price:0});
-    // Balance auto-updates via subscription
   } else if(!isReal&&realBalance!==null){
     realBalance=+(realBalance-stk+payout).toFixed(2);
     updateBalanceUI();flashBalance();
   }
-
   isBuying=false;con=null;clearBarriers();exitProbability=0;updateExitMeter(0);
   $('exitMeter').classList.remove('on');renderNoContract();resetBarrierUI();
   $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-  toast((won?'✅ +$':pnl===0?'⚪ $':'❌ -$')+Math.abs(pnl).toFixed(2)+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'y',4000);
+  toast((won?'+$':pnl===0?'$':'-$')+Math.abs(pnl).toFixed(2)+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'y',4000);
 }
 
-// ═══════════════════════════════════════════
-// KNOCK OUT
-// ═══════════════════════════════════════════
+// ═══ KNOCK OUT ═══
 function onKO(price){
   if(!con)return;
-  const dir=price>=con.upper?'UPPER ▲':'LOWER ▼';
+  const dir=price>=con.upper?'UPPER':'LOWER';
   const loss=con.stake,isReal=con.isReal;
-  showFlash('flashExit','❌ KO! '+dir+' -$'+loss.toFixed(2),3500);
+  showFlash('flashExit','KO! '+dir+' -$'+loss.toFixed(2),3500);
   $('chartWrap').classList.add('show-danger');
   setTimeout(()=>$('chartWrap').classList.remove('show-danger'),2500);
-  toast('❌ Barrier hit! '+dir+(isReal?' [REAL]':' [SIM]'),'r',6000);
+  toast('Barrier hit! '+dir+(isReal?' [REAL]':' [SIM]'),'r',6000);
   ariaSpeak('Barrier hit. Analyzing next opportunity.');
   if(con.byAI){aiLoss++;aiTrades++;aiPnl=+(aiPnl-loss).toFixed(2);addHistItem({won:false,pnl:-loss,reason:'BARRIER HIT '+dir,ticks:con.ticks});aiCool=true;setTimeout(()=>{aiCool=false;},9000);}
   if(isReal&&con.realId){send({sell:con.realId,price:0});}
@@ -1816,9 +1667,7 @@ function onKO(price){
   $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPayout').textContent='$0.00';
 }
 
-// ═══════════════════════════════════════════
-// CONTRACT UI
-// ═══════════════════════════════════════════
+// ═══ CONTRACT UI ═══
 function updateConUI(){
   if(!con){renderNoContract();return;}
   const pnlColor=con.pnl>=0?'var(--green)':'var(--red)';
@@ -1829,24 +1678,25 @@ function updateConUI(){
   $('sTicks').textContent=con.ticks;
   $('sPnl').textContent=(con.pnl>=0?'+$':'-$')+Math.abs(con.pnl).toFixed(2);$('sPnl').style.color=pnlColor;
   $('sPayout').textContent='$'+con.payout.toFixed(2);
-  $('conPanel').innerHTML=`<div class="contract-box">
-    <div class="con-hdr"><h4>⚡ ${con.byAI?'🤖 AI ':''}ACTIVE ${con.isReal?'[REAL]':'[SIM]'}</h4><span class="pulse"></span></div>
-    <div class="con-body">
-      <div class="con-row"><span>Entry</span><span style="color:var(--blue);">${con.entry.toFixed(dp)}</span></div>
-      <div class="con-row"><span>Upper ▲</span><span style="color:var(--green);">${con.upper.toFixed(dp)}</span></div>
-      <div class="con-row"><span>Lower ▼</span><span style="color:var(--red);">${con.lower.toFixed(dp)}</span></div>
-      <div class="con-row"><span>Ticks</span><span style="color:var(--blue);">${con.ticks}</span></div>
-      <div class="con-row"><span>Hold Safety</span><span style="color:${hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)'};font-weight:800;">${hs}%</span></div>
-      <div class="con-row"><span>Exit Risk</span><span style="color:${rc};font-weight:800;">${ep}%</span></div>
-      <div class="pnl-bar"><div class="pnl-fill" style="width:${barW}%;background:${pnlColor};"></div></div>
-      <div class="con-row"><span>P&L</span><span style="color:${pnlColor};font-size:14px;font-weight:800;">${con.pnl>=0?'+':'-'}$${Math.abs(con.pnl).toFixed(2)}</span></div>
-      <div class="con-row"><span>Payout</span><span style="color:var(--gold);font-weight:700;">$${con.payout.toFixed(2)}</span></div>
-      <div class="con-row"><span>Time</span><span>${elapsed}s</span></div>
-      <button class="sell-btn" onclick="closeContract('Manual',false)">■ Sell Now</button>
-    </div></div>`;
+  $('conPanel').innerHTML=
+    '<div class="contract-box">'+
+    '<div class="con-hdr"><h4>'+(con.byAI?'🤖 AI ':'')+'ACTIVE '+(con.isReal?'[REAL]':'[SIM]')+'</h4><span class="pulse"></span></div>'+
+    '<div class="con-body">'+
+    '<div class="con-row"><span>Entry</span><span style="color:var(--blue);">'+con.entry.toFixed(dp)+'</span></div>'+
+    '<div class="con-row"><span>Upper</span><span style="color:var(--green);">'+con.upper.toFixed(dp)+'</span></div>'+
+    '<div class="con-row"><span>Lower</span><span style="color:var(--red);">'+con.lower.toFixed(dp)+'</span></div>'+
+    '<div class="con-row"><span>Ticks</span><span style="color:var(--blue);">'+con.ticks+'</span></div>'+
+    '<div class="con-row"><span>Hold Safety</span><span style="color:'+(hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)')+';font-weight:800;">'+hs+'%</span></div>'+
+    '<div class="con-row"><span>Exit Risk</span><span style="color:'+rc+';font-weight:800;">'+ep+'%</span></div>'+
+    '<div class="pnl-bar"><div class="pnl-fill" style="width:'+barW+'%;background:'+pnlColor+';"></div></div>'+
+    '<div class="con-row"><span>P&amp;L</span><span style="color:'+pnlColor+';font-size:14px;font-weight:800;">'+(con.pnl>=0?'+':'-')+'$'+Math.abs(con.pnl).toFixed(2)+'</span></div>'+
+    '<div class="con-row"><span>Payout</span><span style="color:var(--gold);font-weight:700;">$'+con.payout.toFixed(2)+'</span></div>'+
+    '<div class="con-row"><span>Time</span><span>'+elapsed+'s</span></div>'+
+    '<button class="sell-btn" onclick="closeContract(\'Manual\',false)">Sell Now</button>'+
+    '</div></div>';
 }
 function renderNoContract(){
-  $('conPanel').innerHTML=`<div class="no-con"><div class="ico">🎯</div><div>${aiOn?'AI Sniper hunting…':'No active contract'}</div><div style="font-size:10px;margin-top:3px;">${aiOn?'Analyzing market…':'Click Buy Accumulator'}</div></div>`;
+  $('conPanel').innerHTML='<div class="no-con"><div class="ico">🎯</div><div>'+(aiOn?'AI Sniper hunting…':'No active contract')+'</div><div style="font-size:10px;margin-top:3px;">'+(aiOn?'Analyzing market…':'Click Buy Accumulator')+'</div></div>';
 }
 function resetBarrierUI(){
   if(prevP){const bd=barrierDist(prevP);$('bUpper').textContent=(prevP+bd).toFixed(dp);$('bLower').textContent=(prevP-bd).toFixed(dp);}
@@ -1854,21 +1704,23 @@ function resetBarrierUI(){
 }
 function updatePhaseUI(){
   const el=$('sniperSt');el.className='sniper-st';
-  switch(phase){
-    case 'HUNTING':el.classList.add('st-hunt');el.textContent='🎯 HUNTING';break;
-    case 'FIRE':el.classList.add('st-lock');el.textContent='⚡ FIRING';break;
-    case 'IN_TRADE':el.classList.add('st-lock');el.textContent='📈 IN TRADE';break;
-    case 'EXITING':el.classList.add('st-exit');el.textContent='🚨 EXITING!';break;
-    default:el.classList.add('st-hunt');el.textContent='● IDLE';
-  }
+  if(phase==='HUNTING'){el.classList.add('st-hunt');el.textContent='🎯 HUNTING';}
+  else if(phase==='FIRE'){el.classList.add('st-lock');el.textContent='FIRING';}
+  else if(phase==='IN_TRADE'){el.classList.add('st-lock');el.textContent='IN TRADE';}
+  else if(phase==='EXITING'){el.classList.add('st-exit');el.textContent='EXITING!';}
+  else{el.classList.add('st-hunt');el.textContent='IDLE';}
 }
-function addHistItem({won,pnl,reason,ticks}){
+function addHistItem(obj){
+  const won=obj.won,pnl=obj.pnl,reason=obj.reason,ticks=obj.ticks;
   const h=$('aiHist'),empty=h.querySelector('div[style]');if(empty)empty.remove();
   const el=document.createElement('div');el.className='hist-item '+(won?'w':'l');
-  el.innerHTML=`<div class="hist-dot" style="background:${won?'var(--green)':'var(--red)');"></div>
-    <div style="flex:1;"><div style="font-weight:700;color:${won?'var(--green)':'var(--red)'};">${pnl>=0?'+':'-'}$${Math.abs(pnl).toFixed(2)}</div>
-    <div style="color:var(--sub);font-size:9px;">${reason.substring(0,34)} · ${ticks}t</div></div>
-    <div style="font-size:9px;color:var(--sub);">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
+  const dotCol=won?'var(--green)':'var(--red)';
+  const pnlCol=won?'var(--green)':'var(--red)';
+  const pnlStr=(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2);
+  el.innerHTML='<div class="hist-dot" style="background:'+dotCol+';"></div>'+
+    '<div style="flex:1;"><div style="font-weight:700;color:'+pnlCol+';">'+pnlStr+'</div>'+
+    '<div style="color:var(--sub);font-size:9px;">'+reason.substring(0,34)+' · '+ticks+'t</div></div>'+
+    '<div style="font-size:9px;color:var(--sub);">'+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'</div>';
   h.insertBefore(el,h.firstChild);
   const all=h.querySelectorAll('.hist-item');if(all.length>20)all[all.length-1].remove();
 }
@@ -1876,14 +1728,14 @@ function addTickRow(price,chg,epoch){
   const up=chg>=0;
   const time=new Date(epoch*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const row=document.createElement('div');row.className='tick-row';
-  row.innerHTML=`<span class="${up?'up':'dn'}">${price.toFixed(dp)}</span><span class="${up?'up':'dn'}">${up?'+':''}${chg.toFixed(dp)}</span><span style="color:var(--sub);">${time}</span>`;
+  row.innerHTML='<span class="'+(up?'up':'dn')+'">'+price.toFixed(dp)+'</span>'+
+    '<span class="'+(up?'up':'dn')+'">'+(up?'+':'')+chg.toFixed(dp)+'</span>'+
+    '<span style="color:var(--sub);">'+time+'</span>';
   const feed=$('tickFeed');feed.insertBefore(row,feed.firstChild);
   const rows=feed.querySelectorAll('.tick-row');if(rows.length>MAX_FEED)rows[rows.length-1].remove();
 }
 
-// ═══════════════════════════════════════════
-// VOICE AI — ARIA (always listening)
-// ═══════════════════════════════════════════
+// ═══ VOICE AI — ARIA ═══
 function initVoice(){
   function loadVoice(){
     const vs=synth.getVoices();
@@ -1925,7 +1777,6 @@ function initVoice(){
     }
   };
 }
-
 function startListen(){
   if(!recognition)return;
   voiceRunning=true;
@@ -1936,9 +1787,8 @@ function stopListen(){
   voiceRunning=false;clearTimeout(voiceRestartTimer);
   try{recognition.abort();}catch(e){}
   $('micBtn').classList.remove('listening');$('avatarRing').className='vp-avatar-ring';
-  $('voiceFab').classList.remove('active');setWave(false);$('vpStatus').textContent='Paused — tap 🎤';
+  $('voiceFab').classList.remove('active');setWave(false);$('vpStatus').textContent='Paused — tap mic';
 }
-
 function ariaSpeak(text){
   if(!synth||!text)return;
   synth.cancel();
@@ -1957,14 +1807,12 @@ function ariaSpeak(text){
   };
   synth.speak(utt);addVpMsg(text,'ai');
 }
-
 function setWave(on){for(let i=1;i<=7;i++){const b=$('vb'+i);if(b)b.classList.toggle('active',on);}}
 function addVpMsg(text,who){
   const chat=$('vpChat'),el=document.createElement('div');el.className='vp-msg '+who;
-  el.innerHTML=`<div>${text}</div><div class="vp-msg-time">${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</div>`;
+  el.innerHTML='<div>'+text+'</div><div class="vp-msg-time">'+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'</div>';
   chat.appendChild(el);chat.scrollTop=chat.scrollHeight;
 }
-
 function processVoiceCmd(text){
   const t=text.toLowerCase().trim(),sw=isSW(t);
   let reply='';
@@ -2014,14 +1862,11 @@ function processVoiceCmd(text){
   }
   setTimeout(()=>ariaSpeak(reply),250);
 }
-
 function isSW(t){
   return['habari','mambo','salama','vipi','sawa','asante','tafadhali','ndiyo','hapana','anza','simama','acha','weka','ongeza','punguza','badilisha','angalia','tafuta','biashara','faida','salio','pesa','kiasi','soko','ninafanya','ninashikilia','ninatoka','karibu','hujambo'].some(w=>t.includes(w));
 }
 
-// ═══════════════════════════════════════════
-// MOBILE UI
-// ═══════════════════════════════════════════
+// ═══ MOBILE UI ═══
 function openLeft(){$('leftPanel').classList.add('open');$('panelOverlay').classList.add('on');}
 function closeLeft(){$('leftPanel').classList.remove('open');$('panelOverlay').classList.remove('on');}
 function openRight(){$('rightPanel').classList.add('open');$('panelOverlay').classList.add('on');}
@@ -2058,9 +1903,7 @@ function toggleVP(){
   }
 }
 
-// ═══════════════════════════════════════════
-// EVENTS
-// ═══════════════════════════════════════════
+// ═══ EVENTS ═══
 function setupEvents(){
   $('aiToggle').addEventListener('change',function(){
     aiOn=this.checked;
@@ -2069,7 +1912,7 @@ function setupEvents(){
     if(aiOn){
       phase='HUNTING';aiCool=false;exitingNow=false;updatePhaseUI();
       $('sbAI').style.color='var(--purple)';
-      toast('🤖 AI Sniper ACTIVE','p');
+      toast('AI Sniper ACTIVE','p');
       lastVolAutoSwitch=0;setTimeout(()=>runVolScan(false),1500);
     } else {
       phase='IDLE';updatePhaseUI();
@@ -2077,7 +1920,6 @@ function setupEvents(){
       if(con&&con.byAI)closeContract('AI off',false);
     }
   });
-
   $('symList').addEventListener('click',e=>{
     const b=e.target.closest('.sym-btn');if(!b)return;
     switchSym(b.dataset.sym,parseInt(b.dataset.dp));closeLeft();
@@ -2093,22 +1935,20 @@ function setupEvents(){
   $('stkDn').addEventListener('click',()=>{stake=Math.max(1,stake-1);$('stkInput').value=stake;$('stkRange').value=stake;});
   $('tpToggle').addEventListener('change',function(){const on=this.checked;$('tpInput').disabled=!on;$('tpInput').style.opacity=on?'1':'.4';tp=on?parseFloat($('tpInput').value):null;});
   $('tpInput').addEventListener('input',()=>{tp=$('tpToggle').checked?parseFloat($('tpInput').value):null;});
-  $('buyBtn').addEventListener('click',()=>{if(con){toast('⚠ Sell first','r');return;}buyContract(false);});
+  $('buyBtn').addEventListener('click',()=>{if(con){toast('Sell first','r');return;}buyContract(false);});
   $('scanVolBtn').addEventListener('click',()=>runVolScan(false));
   $('scanClose').addEventListener('click',()=>$('scanOverlay').classList.remove('open'));
   $('scanOverlay').addEventListener('click',e=>{if(e.target===$('scanOverlay'))$('scanOverlay').classList.remove('open');});
   $('logoutBtn').addEventListener('click',logout);
-
   $('voiceFab').addEventListener('click',toggleVP);
   $('vpClose').addEventListener('click',()=>{voiceOpen=false;$('voicePanel').classList.remove('open');$('voiceFab').style.display='flex';});
   $('micBtn').addEventListener('click',()=>{
-    if(voiceRunning){stopListen();$('micBtn').textContent='🎤';toast('🔇 Voice paused','y');}
-    else{startListen();$('micBtn').textContent='🔴';toast('🎤 ARIA listening','p');}
+    if(voiceRunning){stopListen();$('micBtn').textContent='🎤';toast('Voice paused','y');}
+    else{startListen();$('micBtn').textContent='🔴';toast('ARIA listening','p');}
   });
   $('vpSend').addEventListener('click',sendText);
   $('vpTextInput').addEventListener('keydown',e=>{if(e.key==='Enter')sendText();});
 }
-
 function sendText(){
   const v=$('vpTextInput').value.trim();if(!v)return;
   addVpMsg(v,'user');$('vpTextInput').value='';processVoiceCmd(v);
