@@ -416,11 +416,63 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 .conn-banner.show{display:block;animation:connPulse 1s infinite;}
 @keyframes connPulse{0%,100%{opacity:1;}50%{opacity:.7;}}
 
-/* ── MOBILE: hide desktop elements ── */
+/* ── MOBILE: comprehensive small screen fixes ── */
 @media(max-width:600px){
   .statusbar{display:none;}
-  .chart-top{height:38px;}
-  .chart-top .price-main{font-size:17px;}
+  .chart-top{height:40px;padding:0 7px;gap:5px;}
+  .chart-top .price-main{font-size:16px;}
+  .chart-meta{display:none;}
+  /* Login card */
+  .login-card{padding:20px 14px;}
+  .login-features{grid-template-columns:1fr;gap:6px;}
+  .login-title{font-size:17px;}
+  /* Left panel full-width on mobile */
+  .left{width:100vw!important;min-width:0!important;}
+  /* AI body compact on mobile */
+  .ai-body{padding:6px;}
+  .ind-grid{grid-template-columns:1fr 1fr;gap:3px;}
+  .ind-card{padding:4px 6px;}
+  .ind-card .val{font-size:10px;}
+  .pattern-box{padding:6px;}
+  /* Chart overlays repositioned for mobile */
+  .ai-ov{max-width:48%;padding:6px 8px;font-size:8px;}
+  .bar-leg{max-width:40%;padding:5px 7px;}
+  .bar-val{font-size:8px;}
+  .exit-meter{min-width:160px;padding:5px 10px;bottom:6px;}
+  .em-score{font-size:13px;}
+  /* Right panel full-width */
+  .right{width:100vw!important;min-width:0!important;}
+  .stat-grid{grid-template-columns:1fr 1fr;gap:4px;padding:6px;}
+  .scard .sv{font-size:13px;}
+  /* Voice panel bottom sheet */
+  .voice-panel{border-radius:14px 14px 0 0;}
+  .vp-chat{min-height:80px;max-height:35vh;}
+  /* Bottom nav taller tap targets */
+  .bottom-nav{height:58px;}
+  .bnav-btn .bnav-ico{font-size:20px;}
+  .bnav-btn{font-size:8px;}
+  /* Mob topbar */
+  .mob-topbar{height:40px;}
+  .mob-btn{padding:5px 9px;font-size:10px;}
+  .mob-price{font-size:13px;}
+  /* Section padding */
+  .sec{padding:7px 9px;}
+  .gr-grid{gap:3px;}
+  .gr-btn{padding:6px 0;font-size:10px;}
+  .buy-btn{padding:12px;font-size:13px;}
+  /* Header */
+  header{padding:0 6px;gap:3px;}
+  .hdr-badge{padding:3px 5px;}
+  .hdr-badge .val{font-size:10px;}
+  /* Scan modal */
+  .scan-modal{padding:12px;}
+}
+@media(max-width:380px){
+  .login-title{font-size:15px;}
+  .btn-login{font-size:12px;padding:13px;}
+  .ai-ov{display:none;}/* hide AI overlay on very small screens */
+  .mob-price{font-size:12px;}
+  .chart-top .price-main{font-size:14px;}
 }
 </style>
 </head>
@@ -583,6 +635,12 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
           <button class="sym-btn" data-sym="R_50" data-dp="4">Volatility 50 <span class="sym-badge">V50</span></button>
           <button class="sym-btn" data-sym="R_75" data-dp="4">Volatility 75 <span class="sym-badge">V75</span></button>
           <button class="sym-btn" data-sym="R_100" data-dp="2">Volatility 100 <span class="sym-badge">V100</span></button>
+          <div style="font-size:9px;color:var(--gold);font-weight:700;padding:4px 0 2px;letter-spacing:.8px;">⚡ 1-SECOND TICKS</div>
+          <button class="sym-btn" data-sym="1HZ10V" data-dp="3">Volatility 10 (1s) <span class="sym-badge">V10·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ25V" data-dp="3">Volatility 25 (1s) <span class="sym-badge">V25·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ50V" data-dp="4">Volatility 50 (1s) <span class="sym-badge">V50·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ75V" data-dp="4">Volatility 75 (1s) <span class="sym-badge">V75·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ100V" data-dp="2">Volatility 100 (1s) <span class="sym-badge">V100·1s</span></button>
         </div>
       </div>
 
@@ -774,7 +832,10 @@ const TICK_BUF=100,MAX_FEED=40;
 const ALL_SYMS=[
   {sym:'R_10',dp:3,name:'V10'},{sym:'R_25',dp:3,name:'V25'},
   {sym:'R_50',dp:4,name:'V50'},{sym:'R_75',dp:4,name:'V75'},
-  {sym:'R_100',dp:2,name:'V100'}
+  {sym:'R_100',dp:2,name:'V100'},
+  {sym:'1HZ10V',dp:3,name:'V10(1s)'},{sym:'1HZ25V',dp:3,name:'V25(1s)'},
+  {sym:'1HZ50V',dp:4,name:'V50(1s)'},{sym:'1HZ75V',dp:4,name:'V75(1s)'},
+  {sym:'1HZ100V',dp:2,name:'V100(1s)'}
 ];
 const CRYPTO_CURRENCIES=['BTC','ETH','USDT','tUSDT','eUSDT','LTC','XRP'];
 
@@ -912,7 +973,8 @@ function bootApp(){
   window.addEventListener('offline',()=>{toast('📵 Offline','r');setDot('err');});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}});
   document.addEventListener('touchstart',()=>{if(!wsAlive&&appReady){reconnDelay=800;connect();}},{passive:true});
-  setInterval(()=>{if(aiOn&&!con&&now()-lastVolSwitch>180000)doVolScanAndSwitch(true);},60000);
+  // Auto-scan every 15s when AI is on and no active trade
+  setInterval(()=>{if(aiOn&&!con&&now()-lastVolSwitch>20000)doVolScanAndSwitch(true);},15000);
 }
 
 // ═══════════════════════════════════════════
@@ -1260,38 +1322,42 @@ function processTick(tick){
     $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
     $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
 
-    // ── 9-LAYER PURE ANALYSIS EXIT — NO TICK COUNT TRIGGERS ──
+    // ── 11-LAYER PURE MARKET-ANALYSIS SNIPER EXIT ──
+    // CRITICAL: No layer fires unless price is in a real danger zone.
+    // Exit is based purely on what the MARKET is doing, not tick counts.
     const n=tickBuf.length;
 
-    // L1: Physical edge — price within 0.05% of barrier
-    const L1=p>=con.upper*0.9995||p<=con.lower*1.0005;
+    // L1: Physical edge — price within 0.03% of barrier → immediate exit
+    const L1=p>=con.upper*0.9997||p<=con.lower*1.0003;
 
-    // L2: Momentum burst — fast move + acceleration toward barrier in tight zone (<20%)
+    // L2: Momentum burst + acceleration in tight zone (<15% safety)
+    // Fires when: price is close AND speeding up toward barrier
     let L2=false;
-    if(n>=4&&safetyPct<20){
+    if(n>=5&&safetyPct<15){
       const v1=tickBuf[n-1].p-tickBuf[n-2].p;
       const v2=tickBuf[n-2].p-tickBuf[n-3].p;
       const v3=tickBuf[n-3].p-tickBuf[n-4].p;
       const toBar=(nearBar===con.upper&&v1>0)||(nearBar===con.lower&&v1<0);
-      const accel=Math.abs(v1)>Math.abs(v2)&&Math.abs(v2)>Math.abs(v3)*0.7;
+      const accel=Math.abs(v1)>Math.abs(v2)*1.1&&Math.abs(v2)>Math.abs(v3)*0.8;
       L2=toBar&&accel;
     }
 
-    // L3: Break probability high — purely analysis based score
-    const L3=bp>=52;
+    // L3: AI break score >= 72% AND in actual danger zone (>40% of gap consumed)
+    // Must have BOTH high score AND dangerous proximity — prevents early exits
+    const L3=bp>=72&&safetyPct<40;
 
-    // L4: Velocity surge — price moved >28% of barrier gap in last 4 ticks toward barrier
+    // L4: Velocity surge — price traversed >30% of half-gap in 5 ticks toward barrier
     let L4=false;
-    if(n>=5&&safetyPct<50){
-      const r4=tickBuf.slice(-5).map(b=>b.p);
-      const totalMove=Math.abs(r4[4]-r4[0]);
-      const toBar=(nearBar===con.upper&&r4[4]>r4[0])||(nearBar===con.lower&&r4[4]<r4[0]);
-      L4=toBar&&totalMove/half>0.25;
+    if(n>=6&&safetyPct<45){
+      const r5=tickBuf.slice(-6).map(b=>b.p);
+      const totalMove=Math.abs(r5[5]-r5[0]);
+      const toBar=(nearBar===con.upper&&r5[5]>r5[0])||(nearBar===con.lower&&r5[5]<r5[0]);
+      L4=toBar&&totalMove/half>0.30;
     }
 
-    // L5: 4-tick streak toward barrier
+    // L5: 4-tick consecutive streak toward barrier AND in danger zone (<35%)
     let L5=false;
-    if(n>=5&&safetyPct<60){
+    if(n>=5&&safetyPct<35){
       let streak=0;
       for(let i=n-1;i>=Math.max(0,n-5);i--){
         const tw=(nearBar===con.upper&&tickBuf[i].up)||(nearBar===con.lower&&!tickBuf[i].up);
@@ -1300,40 +1366,63 @@ function processTick(tick){
       L5=streak>=4;
     }
 
-    // L6: Hold score critical
-    const L6=hs<18&&safetyPct<45;
+    // L6: Hold score critical (<12%) AND in tight zone (<30%)
+    const L6=hs<12&&safetyPct<30;
 
-    // L7: Price tested within 0.08% of barrier in last 5 ticks
+    // L7: Price tested within 0.05% of barrier in last 3 ticks AND proximity <25%
     let L7=false;
-    if(n>=5){
-      const last5=tickBuf.slice(-5).map(b=>b.p);
-      const testU=Math.max(...last5)/con.upper;
-      const testL=con.lower/Math.min(...last5);
-      L7=(testU>0.9992||testL>0.9992)&&safetyPct<35;
+    if(n>=3&&safetyPct<25){
+      const last3=tickBuf.slice(-3).map(b=>b.p);
+      const testU=Math.max(...last3)/con.upper;
+      const testL=con.lower/Math.min(...last3);
+      L7=testU>0.9995||testL>0.9995;
     }
 
-    // L8: Pure price acceleration toward barrier (no tick count)
+    // L8: All last 5 moves same direction toward barrier AND each larger than previous
+    // Detects a genuine accelerating approach — most reliable pattern
     let L8=false;
-    if(n>=6&&safetyPct<55){
+    if(n>=7&&safetyPct<45){
       const moves=[];
-      for(let i=n-5;i<n;i++)moves.push(tickBuf[i].p-tickBuf[i-1].p);
+      for(let i=n-6;i<n;i++)moves.push(tickBuf[i].p-tickBuf[i-1].p);
       const toBar=nearBar===con.upper;
-      const allToBar=moves.every(m=>toBar?m>=0:m<=0);
-      const increasing=moves.every((m,i)=>i===0||Math.abs(m)>=Math.abs(moves[i-1])*0.75);
-      L8=allToBar&&increasing&&moves.length>=4;
+      const allToBar=moves.every(m=>toBar?m>0:m<0);
+      const accelerating=moves.every((m,i)=>i===0||Math.abs(m)>=Math.abs(moves[i-1])*0.80);
+      L8=allToBar&&accelerating;
     }
 
-    // L9: Composite danger — medium prob + medium proximity + moving toward
+    // L9: Composite triple alarm — high prob + tight proximity + moving fast
     let L9=false;
-    if(n>=8&&bp>=38&&safetyPct<32){
-      const v=tickBuf[n-1].p-tickBuf[n-4].p;
-      const toBar=(nearBar===con.upper&&v>0)||(nearBar===con.lower&&v<0);
-      L9=toBar;
+    if(n>=8&&bp>=58&&safetyPct<22){
+      const vel5=(tickBuf[n-1].p-tickBuf[n-5].p);
+      const toBar=(nearBar===con.upper&&vel5>0)||(nearBar===con.lower&&vel5<0);
+      const velPct=Math.abs(vel5)/half;
+      L9=toBar&&velPct>0.12;
     }
 
-    const shouldExit=aiOn&&con.byAI&&(L1||L2||L3||L4||L5||L6||L7||L8||L9);
+    // L10: RSI extreme (>75 or <25) AND very close to barrier (<30%)
+    let L10=false;
+    if(n>=10&&safetyPct<30){
+      let g=0,l=0;
+      for(let i=n-9;i<n;i++){const c=tickBuf[i].p-tickBuf[i-1].p;if(c>0)g+=c;else l+=Math.abs(c);}
+      const rsiVal=100-100/(1+((g/9)||0.001)/((l/9)||0.001));
+      const extremeUp=nearBar===con.upper&&rsiVal>75;
+      const extremeDn=nearBar===con.lower&&rsiVal<25;
+      L10=extremeUp||extremeDn;
+    }
+
+    // L11: Micro-burst — last 4 ticks all LARGE (>1.5x avg) AND toward barrier AND <50% safety
+    let L11=false;
+    if(n>=12&&safetyPct<50){
+      const avgSz=tickBuf.slice(n-12,n-4).reduce((a,b)=>a+Math.abs(b.chg),0)/8||0.0001;
+      const last4=tickBuf.slice(-4);
+      const allDir=last4.every(b=>nearBar===con.upper?b.up:!b.up);
+      const allBig=last4.every(b=>Math.abs(b.chg)>avgSz*1.5);
+      L11=allDir&&allBig;
+    }
+
+    const shouldExit=aiOn&&con.byAI&&(L1||L2||L3||L4||L5||L6||L7||L8||L9||L10||L11);
     if(shouldExit){
-      const reason=L1?'Edge<0.05%':L2?'Accel burst':L3?'Prob '+bp+'%':L4?'Vel surge':L5?'4-streak':L6?'Hold '+hs+'%':L7?'Barrier test':L8?'Accel pattern':L9?'Comp danger':'Exit';
+      const reason=L1?'Edge<0.03%':L2?'Accel burst<15%':L3?'Score '+bp+'%+prox':L4?'Vel surge 30%':L5?'4-streak<35%':L6?'Hold '+hs+'%':L7?'Bar test<25%':L8?'Accel×6 pattern':L9?'Triple alarm':L10?'RSI ext<30%':'MicroBurst×4';
       sniperExit(p,bp,reason);
       prevP=p;addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
@@ -1354,7 +1443,7 @@ function processTick(tick){
 }
 
 // ═══════════════════════════════════════════
-// BREAK PROBABILITY — 8 factors, pure analysis
+// BREAK PROBABILITY — 10 factors, ultra-precise analysis
 // ═══════════════════════════════════════════
 function computeBreakProb(price,contract,buf){
   if(!contract||buf.length<4)return 0;
@@ -1367,57 +1456,92 @@ function computeBreakProb(price,contract,buf){
   const nearBar=dU<dL?upper:lower;
   const proxRatio=1-(nearDist/half);
 
-  // F1: Proximity exponential (50pts)
-  score+=Math.max(0,Math.pow(proxRatio,1.8)*50);
+  // F1: Proximity exponential (45pts) — steeper curve near barrier
+  score+=Math.max(0,Math.pow(proxRatio,1.5)*45);
 
-  // F2: Velocity toward barrier (20pts)
+  // F2: Velocity toward barrier (22pts)
   const vWin=Math.min(5,n-1);
   const vel=(buf[n-1].p-buf[n-1-vWin].p)/vWin;
   const velToBar=(nearBar===upper&&vel>0)||(nearBar===lower&&vel<0);
-  if(velToBar)score+=Math.min(20,Math.abs(vel)/half*1400);
+  if(velToBar)score+=Math.min(22,Math.abs(vel)/half*1600);
 
-  // F3: Acceleration (15pts)
+  // F3: Acceleration toward barrier (15pts)
   if(n>=4){
     const v1=buf[n-1].p-buf[n-2].p;
     const v2=buf[n-2].p-buf[n-3].p;
     const v3=buf[n-3].p-buf[n-4].p;
     const acc=v1-v2;
     const accToBar=(nearBar===upper&&acc>0)||(nearBar===lower&&acc<0);
-    if(accToBar)score+=Math.min(12,Math.abs(acc)/half*800);
+    if(accToBar)score+=Math.min(13,Math.abs(acc)/half*1000);
     const jerk=(v1-v2)-(v2-v3);
-    if((nearBar===upper&&jerk>0)||(nearBar===lower&&jerk<0))score+=3;
+    if((nearBar===upper&&jerk>0)||(nearBar===lower&&jerk<0))score+=2;
   }
 
-  // F4: Streak (10pts)
+  // F4: Consecutive streak toward barrier (12pts)
   let streak=0;
-  for(let i=n-1;i>=Math.max(0,n-12);i--){const tw=(nearBar===upper&&buf[i].up)||(nearBar===lower&&!buf[i].up);if(tw)streak++;else break;}
-  score+=streak*0.9;
+  for(let i=n-1;i>=Math.max(0,n-15);i--){const tw=(nearBar===upper&&buf[i].up)||(nearBar===lower&&!buf[i].up);if(tw)streak++;else break;}
+  score+=Math.min(12,streak*1.2);
 
-  // F5: Recent barrier test (10pts)
+  // F5: Recent barrier proximity test — was price close before? (10pts)
   if(n>=6){
     const last6=buf.slice(n-6).map(b=>b.p);
-    if(nearBar===upper&&Math.max(...last6)/upper>0.9988)score+=10;
-    if(nearBar===lower&&lower/Math.min(...last6)>0.9988)score+=10;
+    if(nearBar===upper&&Math.max(...last6)/upper>0.9985)score+=10;
+    if(nearBar===lower&&lower/Math.min(...last6)>0.9985)score+=10;
   }
 
-  // F6: Trend alignment (8pts)
+  // F6: Trend alignment with barrier direction (8pts)
   if(n>=12){
     const m1=buf.slice(n-6).reduce((a,b)=>a+b.p,0)/6;
     const m2=buf.slice(n-12,n-6).reduce((a,b)=>a+b.p,0)/6;
     if((nearBar===upper&&m1>m2)||(nearBar===lower&&m1<m2))score+=8;
   }
 
-  // F7: Volatility expansion (7pts)
+  // F7: Volatility expansion in danger zone (7pts)
   if(n>=20){
     const r20=buf.slice(n-20).map(b=>b.p);
     const m=r20.reduce((a,b)=>a+b,0)/20;
     const std=Math.sqrt(r20.reduce((a,b)=>a+Math.pow(b-m,2),0)/20);
-    if((std/price)*100>0.20&&proxRatio>0.45)score+=7;
+    if((std/price)*100>0.18&&proxRatio>0.40)score+=7;
   }
 
-  // Safety clamp when far from barrier
-  if(nearDist>half*0.78)score=Math.min(score,10);
-  if(nearDist>half*0.90)score=Math.min(score,2);
+  // F8: Price range compression — price oscillating closer and closer (8pts)
+  if(n>=10){
+    const last10=buf.slice(n-10).map(b=>b.p);
+    const recentMax=Math.max(...last10.slice(5));
+    const recentMin=Math.min(...last10.slice(5));
+    const oldMax=Math.max(...last10.slice(0,5));
+    const oldMin=Math.min(...last10.slice(0,5));
+    const recentRange=recentMax-recentMin;
+    const oldRange=oldMax-oldMin;
+    if(nearBar===upper&&recentMax>oldMax&&recentRange<oldRange*1.1)score+=8;
+    if(nearBar===lower&&recentMin<oldMin&&recentRange<oldRange*1.1)score+=8;
+  }
+
+  // F9: RSI-like momentum divergence (6pts)
+  if(n>=8){
+    let g=0,l=0;
+    for(let i=n-7;i<n;i++){const c=buf[i].p-buf[i-1].p;if(c>0)g+=c;else l+=Math.abs(c);}
+    const rsi=100-100/(1+((g/7)||0.001)/((l/7)||0.001));
+    if(nearBar===upper&&rsi>68)score+=6;
+    if(nearBar===lower&&rsi<32)score+=6;
+  }
+
+  // F10: Micro-burst — last 3 ticks all large toward barrier (7pts)
+  if(n>=4){
+    const avgMove=buf.slice(n-10,n-1).reduce((a,b,i,ar)=>a+Math.abs(b.p-(i>0?ar[i-1].p:b.p)),0)/9||0.0001;
+    const last3=[buf[n-3],buf[n-2],buf[n-1]];
+    const allToBar=last3.every(b=>nearBar===upper?b.up:!b.up);
+    const allLarge=last3.every((b,i,ar)=>Math.abs(b.p-(i>0?ar[i-1].p:b.p))>avgMove*0.8);
+    if(allToBar&&allLarge&&proxRatio>0.30)score+=7;
+  }
+
+  // Safety clamp — score is physically impossible to be high when far from barrier
+  // This prevents the AI from triggering exits when price is safely in the middle
+  if(nearDist>half*0.90)score=Math.min(score,3);   // very far → max 3%
+  if(nearDist>half*0.75)score=Math.min(score,10);  // far → max 10%
+  if(nearDist>half*0.55)score=Math.min(score,25);  // medium → max 25%
+  if(nearDist>half*0.35)score=Math.min(score,50);  // approaching → max 50%
+  // Only when price is within 35% of half-gap can score exceed 50%
 
   return Math.min(100,Math.max(0,Math.round(score)));
 }
@@ -1516,16 +1640,19 @@ function doVolScanAndSwitch(silent){
 
     renderVolSide(results);
 
-    // Auto-switch to best symbol — switches to ANY of the 5, no score threshold
+    // Auto-switch to best symbol — ALWAYS switches to highest scorer, no threshold
     if(!con&&results.length>0){
       const best=results[0];
-      if(best.sym!==sym&&now()-lastVolSwitch>30000){
+      // Switch even if same sym if score improved; cooldown 20s
+      if(best.sym!==sym&&now()-lastVolSwitch>15000){
         lastVolSwitch=now();
         switchSym(best.sym,best.dp);
         toast('🔭 AI→'+best.name+' (score:'+best.score+')','p');
+      }else{
+        lastVolSwitch=now();
       }
     }
-  },2000);
+  },1500);
 }
 
 function renderVolSide(results){
@@ -1614,7 +1741,7 @@ function runAI(price){
   $('sbAI').textContent='AI:'+aiTrades+'t';$('sbAI').style.color=aiOn?'var(--green)':'var(--sub)';
 
   if(sig==='BUY'&&!con&&!aiCool&&!isBuying)doEntry(price,entryScore);
-  if(now()-lastVolSwitch>180000&&!con)doVolScanAndSwitch(true);
+  if(now()-lastVolSwitch>20000&&!con)doVolScanAndSwitch(true);
 }
 
 // ═══════════════════════════════════════════
@@ -1637,8 +1764,9 @@ function sniperExit(price,bp,reason){
   closeContract(reason,true);
   setTimeout(()=>{
     phase='HUNTING';exitingNow=false;updatePhaseUI();
-    if(aiOn){lastVolSwitch=0;doVolScanAndSwitch(true);}
-  },600);
+    // Always scan ALL volatilities after every exit to find next best market
+    if(aiOn){lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(true),400);}
+  },400);
 }
 
 // ═══════════════════════════════════════════
