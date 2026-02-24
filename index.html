@@ -100,6 +100,35 @@ header{height:48px;background:var(--card);border-bottom:1px solid var(--border);
 .btn-logout{width:100%;margin-top:8px;padding:6px;border:1px solid var(--red);border-radius:7px;background:transparent;color:var(--red);font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;}
 .btn-logout:hover{background:#ff3d7115;}
 
+/* ACCOUNT SWITCHER */
+.acct-switcher{margin-top:9px;}
+.acct-switcher-lbl{font-size:9px;color:var(--sub);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px;display:flex;align-items:center;gap:5px;}
+.acct-drop-wrap{position:relative;}
+.acct-drop-btn{width:100%;background:#0a0d12;border:1px solid var(--border);border-radius:7px;color:var(--text);padding:7px 10px;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:6px;transition:all .2s;-webkit-tap-highlight-color:transparent;}
+.acct-drop-btn:hover{border-color:var(--blue);}
+.acct-drop-btn .acct-cur{display:flex;align-items:center;gap:6px;min-width:0;}
+.acct-drop-btn .acct-cur-tag{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;flex-shrink:0;}
+.acct-drop-btn .acct-cur-name{font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.acct-drop-btn .acct-cur-bal{font-size:10px;color:var(--gold);font-weight:700;flex-shrink:0;}
+.acct-arrow{font-size:10px;color:var(--sub);transition:transform .2s;flex-shrink:0;}
+.acct-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card2);border:1px solid var(--border);border-radius:9px;z-index:200;overflow:hidden;box-shadow:0 8px 28px #00000080;display:none;}
+.acct-menu.open{display:block;}
+.acct-menu-item{display:flex;align-items:center;gap:8px;padding:9px 11px;cursor:pointer;transition:background .15s;border-bottom:1px solid var(--border);}
+.acct-menu-item:last-child{border-bottom:none;}
+.acct-menu-item:hover{background:#00b0ff0d;}
+.acct-menu-item.active-acct{background:#00e67608;}
+.acct-menu-tag{font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;flex-shrink:0;}
+.acct-menu-tag.demo{background:#1e2736;color:var(--sub);}
+.acct-menu-tag.real{background:#003d1a;color:var(--green);}
+.acct-menu-tag.crypto{background:#1a0d2e;color:var(--purple);}
+.acct-menu-info{flex:1;min-width:0;}
+.acct-menu-id{font-size:11px;font-weight:700;}
+.acct-menu-cur{font-size:9px;color:var(--sub);}
+.acct-menu-bal{font-size:11px;font-weight:700;color:var(--gold);flex-shrink:0;}
+.acct-menu-check{font-size:14px;color:var(--green);flex-shrink:0;opacity:0;}
+.acct-menu-item.active-acct .acct-menu-check{opacity:1;}
+.acct-switching{opacity:.6;pointer-events:none;}
+
 /* AI ENGINE */
 .ai-wrap{padding:11px;border-bottom:1px solid var(--border);background:linear-gradient(160deg,#0e0720,#0a0d12);position:relative;overflow:hidden;}
 .ai-wrap::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at top left,#6d28d912,transparent 70%);pointer-events:none;}
@@ -453,6 +482,25 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
         </div>
         <div class="user-bal-lbl" style="margin-top:7px;">Live Balance</div>
         <div class="user-bal" id="userBal">—</div>
+
+        <!-- ACCOUNT SWITCHER -->
+        <div class="acct-switcher" id="acctSwitcher" style="display:none;">
+          <div class="acct-switcher-lbl">🔄 Account Type</div>
+          <div class="acct-drop-wrap">
+            <button class="acct-drop-btn" id="acctDropBtn" onclick="toggleAcctMenu()">
+              <div class="acct-cur">
+                <span class="acct-cur-tag" id="acctCurTag" style="background:#003d1a;color:var(--green);">REAL</span>
+                <span class="acct-cur-name" id="acctCurName">Loading…</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span class="acct-cur-bal" id="acctCurBal">—</span>
+                <span class="acct-arrow" id="acctArrow">▼</span>
+              </div>
+            </button>
+            <div class="acct-menu" id="acctMenu"></div>
+          </div>
+        </div>
+
         <button class="btn-logout" id="logoutBtn">✕ Logout</button>
       </div>
     </div>
@@ -698,6 +746,10 @@ let reconnDelay=1000, reconnTimer=null, connTO=null, appReady=false;
 let sym='R_10', dp=3, gr=2, stake=10, tp=null;
 let token='', authed=false, userInfo={}, userCurrency='USD';
 let isBuying=false;
+// Multi-account
+let allTokens={}; // {loginid: token}
+let accountList=[]; // [{loginid, currency, account_type, balance, token}]
+let activeLoginid='';
 let priceHist=[], tickBuf=[], prevP=null;
 let hi=-Infinity, lo=Infinity;
 let symBufs={};
@@ -744,8 +796,24 @@ function getOAuthURL(){
 }
 function parseOAuthToken(){
   const p=new URLSearchParams(window.location.search);
-  for(let i=1;i<=5;i++){const t=p.get('token'+i);if(t)return t;}
+  // Collect all tokens (Deriv sends token1, account1, token2, account2, etc.)
+  allTokens={};
+  for(let i=1;i<=10;i++){
+    const t=p.get('token'+i);
+    const a=p.get('acct'+i);
+    const c=p.get('cur'+i);
+    if(t&&a){allTokens[a]={token:t,currency:c||'USD'};}
+  }
+  // Return first token found
+  for(let i=1;i<=10;i++){const t=p.get('token'+i);if(t)return t;}
   return null;
+}
+
+function parseStoredTokens(){
+  try{
+    const s=localStorage.getItem('deriv_accounts');
+    if(s){allTokens=JSON.parse(s);}
+  }catch(e){}
 }
 function initLogin(){
   const urlTok=parseOAuthToken();
@@ -942,26 +1010,56 @@ function handle(d){
     }
     authed=true;
     const a=d.authorize;
-    token=token; // keep token
     localStorage.setItem('deriv_tk',token);
     userCurrency=a.currency||'USD';
+    activeLoginid=a.loginid||'';
     userInfo={
       name:a.fullname||a.loginid||'Trader',
       loginid:a.loginid||'',
       currency:userCurrency,
     };
     realBalance=a.balance!==undefined?parseFloat(a.balance):null;
+
+    // ★ Build account list from account_list in authorize response
+    if(a.account_list&&a.account_list.length){
+      // Merge Deriv's account_list with our stored tokens
+      accountList=a.account_list.map(ac=>{
+        const stored=allTokens[ac.loginid];
+        return{
+          loginid:ac.loginid,
+          currency:ac.currency||'USD',
+          account_type:ac.account_type||'real',
+          is_disabled:ac.is_disabled||false,
+          is_virtual:ac.is_virtual||false,
+          token:stored?stored.token:(ac.loginid===activeLoginid?token:''),
+          balance:ac.loginid===activeLoginid?realBalance:null,
+        };
+      });
+      // Save all tokens we know about
+      accountList.forEach(ac=>{
+        if(ac.token)allTokens[ac.loginid]={token:ac.token,currency:ac.currency};
+      });
+      try{localStorage.setItem('deriv_accounts',JSON.stringify(allTokens));}catch(e){}
+    } else if(accountList.length===0){
+      // Fallback: just show the current account
+      accountList=[{loginid:activeLoginid,currency:userCurrency,account_type:a.is_virtual?'virtual':'real',is_virtual:a.is_virtual||false,token,balance:realBalance}];
+    }
+
     updateBalanceUI();
     updateUserCard();
-    $('sbAuth').textContent='Live:'+a.loginid;
-    $('sbAuth').style.color='var(--green)';
+    renderAccountMenu();
+    $('sbAuth').textContent=(a.is_virtual?'Demo':'Live')+':'+a.loginid;
+    $('sbAuth').style.color=a.is_virtual?'var(--gold)':'var(--green)';
     $('hPnlBadge').style.display='flex';
-    // Subscribe to balance updates — THIS IS KEY for live balance
+    // Subscribe to balance updates
     send({balance:1,subscribe:1});
+    // Fetch balances for all accounts
+    send({get_account_status:1});
     // Check open positions
     send({portfolio:1,contract_type:['ACCU']});
-    toast('✅ Connected — '+userInfo.name+' | '+userCurrency+' '+realBalance.toFixed(2),'g');
-    ariaSpeak('Welcome '+userInfo.name+'! Balance is '+userCurrency+' '+realBalance.toFixed(2)+'. AI Sniper ready.');
+    const balStr=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'unknown';
+    toast('✅ '+(a.is_virtual?'Demo':'Live')+' — '+userInfo.name+' | '+balStr,'g');
+    ariaSpeak('Welcome '+userInfo.name.split(' ')[0]+'! Balance is '+balStr+'. AI Sniper ready.');
     return;
   }
 
@@ -971,8 +1069,13 @@ function handle(d){
       const nb=parseFloat(d.balance.balance);
       const ob=realBalance;
       realBalance=nb;
+      // Update balance in account list too
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      if(acct)acct.balance=nb;
       updateBalanceUI();
       flashBalance();
+      // Update dropdown display
+      if(accountList.length>1)renderAccountMenu();
       if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
         const diff=+(nb-ob).toFixed(2);
         toast((diff>0?'💰 +':'💸 ')+diff+' | Balance: '+userCurrency+' '+nb.toFixed(2),diff>0?'g':'y',5000);
@@ -1091,6 +1194,83 @@ function updateUserCard(){
   $('userName').textContent=userInfo.name||'Trader';
   $('userUid').textContent=userInfo.loginid||'Demo';
 }
+
+function renderAccountMenu(){
+  if(!accountList||accountList.length<=1){$('acctSwitcher').style.display='none';return;}
+  $('acctSwitcher').style.display='block';
+  const cur=accountList.find(a=>a.loginid===activeLoginid)||accountList[0];
+  // Update button display
+  const isVirt=cur.is_virtual||cur.account_type==='virtual';
+  const isCrypto=cur.currency&&['BTC','ETH','USDT','tUSDT','eUSDT','LTC'].includes(cur.currency);
+  const tagBg=isVirt?'#1e2736':isCrypto?'#1a0d2e':'#003d1a';
+  const tagCl=isVirt?'#7d8fa3':isCrypto?'#c084fc':'#00e676';
+  const tagLbl=isVirt?'DEMO':isCrypto?'CRYPTO':'REAL';
+  $('acctCurTag').textContent=tagLbl;
+  $('acctCurTag').style.background=tagBg;
+  $('acctCurTag').style.color=tagCl;
+  $('acctCurName').textContent=cur.loginid;
+  $('acctCurBal').textContent=cur.balance!==null&&cur.balance!==undefined?cur.currency+' '+parseFloat(cur.balance).toFixed(2):'—';
+  // Build dropdown items
+  $('acctMenu').innerHTML=accountList.map(a=>{
+    const virt=a.is_virtual||a.account_type==='virtual';
+    const crypto=['BTC','ETH','USDT','tUSDT','eUSDT','LTC'].includes(a.currency);
+    const tagC=virt?'demo':crypto?'crypto':'real';
+    const tagN=virt?'DEMO':crypto?'CRYPTO':'REAL';
+    const isActive=a.loginid===activeLoginid;
+    const bal=a.balance!==null&&a.balance!==undefined?a.currency+' '+parseFloat(a.balance).toFixed(2):'—';
+    const hasToken=!!a.token;
+    return`<div class="acct-menu-item${isActive?' active-acct':''}" onclick="switchAccount('${a.loginid}')" style="${!hasToken?'opacity:.5;':''}">
+      <span class="acct-menu-tag ${tagC}">${tagN}</span>
+      <div class="acct-menu-info">
+        <div class="acct-menu-id">${a.loginid}</div>
+        <div class="acct-menu-cur">${a.currency||'—'}${!hasToken?' · Login again to use':''}</div>
+      </div>
+      <span class="acct-menu-bal">${bal}</span>
+      <span class="acct-menu-check">✓</span>
+    </div>`;
+  }).join('');
+}
+
+function toggleAcctMenu(){
+  const m=$('acctMenu'),a=$('acctArrow');
+  m.classList.toggle('open');
+  a.textContent=m.classList.contains('open')?'▲':'▼';
+  if(m.classList.contains('open')){
+    setTimeout(()=>document.addEventListener('click',closeAcctMenu,{once:true}),10);
+  }
+}
+function closeAcctMenu(){
+  $('acctMenu').classList.remove('open');
+  $('acctArrow').textContent='▼';
+}
+
+function switchAccount(loginid){
+  closeAcctMenu();
+  if(loginid===activeLoginid){toast('Already on this account','');return;}
+  const acct=accountList.find(a=>a.loginid===loginid);
+  if(!acct){toast('⚠ Account not found','r');return;}
+  if(!acct.token){
+    toast('⚠ Please log in again to access this account — tokens expired','r',6000);
+    ariaSpeak('Please log in again to switch accounts. Your session tokens have expired.');
+    return;
+  }
+  // Close any open trade
+  if(con)closeContract('Account switch',false);
+  // Switch token and re-authorize
+  token=acct.token;
+  activeLoginid=loginid;
+  authed=false;realBalance=null;
+  $('hBalance').textContent='Switching…';
+  toast('🔄 Switching to '+loginid+'…','p',3000);
+  ariaSpeak('Switching to account '+loginid+'. Please wait.');
+  // Re-authorize with new token on existing WS connection
+  if(ws&&ws.readyState===1){
+    ws.send(JSON.stringify({authorize:token}));
+  } else {
+    connect();
+  }
+}
+
 function fetchOpenPositions(){send({portfolio:1,contract_type:['ACCU']});}
 
 // ═══════════════════════════════════════════════════
@@ -2109,9 +2289,12 @@ $('demoBtn').addEventListener('click',()=>{
   if(urlTok){
     token=urlTok;
     try{window.history.replaceState({},'',window.location.pathname);}catch(e){}
+    // Save all tokens found in URL
+    try{localStorage.setItem('deriv_accounts',JSON.stringify(allTokens));}catch(e){}
     $('loginOverlay').style.display='none';
     bootApp();
   } else {
+    parseStoredTokens(); // Load stored multi-account tokens
     const saved=localStorage.getItem('deriv_tk');
     if(saved){
       token=saved;
