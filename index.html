@@ -1127,31 +1127,16 @@ function handle(d){
     if(d.error){
       const ec=d.error.code||'';
       if(['InvalidSellContractProposal','AlreadySold','ContractAlreadySold'].includes(ec)){
-        if(con){if(con.byAI){aiLoss++;aiTrades++;aiPnl-=con.stake;addHistItem({won:false,pnl:-con.stake,reason:'KO',ticks:con.ticks});}
-          con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');}
+        if(con){
+          if(con.byAI){aiLoss++;aiTrades++;aiPnl-=con.stake;addHistItem({won:false,pnl:-con.stake,reason:'KO',ticks:con.ticks});}
+          con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
+        }
       }else toast('Sell error: '+(d.error.message||''),'y',4000);
       return;
     }
-    // ═══ CRITICAL: Update balance immediately from sell response ═══
-    // Deriv returns sold_for = the cash value received for the contract
-    // Balance = previous_balance + sold_for (because stake was already deducted on buy)
-    if(d.sell&&d.sell.sold_for!==undefined){
-      const soldFor=parseFloat(d.sell.sold_for);
-      if(soldFor>0&&realBalance!==null){
-        const oldBal=realBalance;
-        // Add profit: sold_for includes stake return + profit
-        // But stake was already deducted when we bought, so just add sold_for
-        realBalance=parseFloat((realBalance+soldFor).toFixed(2));
-        updateBalanceUI();
-        flashBalance();
-        const diff=parseFloat((realBalance-oldBal).toFixed(2));
-        if(Math.abs(diff)>0.001){
-          toast((diff>0?'💰 +':'💸 ')+Math.abs(diff).toFixed(2)+' → '+userCurrency+' '+realBalance.toFixed(2),diff>0?'g':'y',5000);
-        }
-      }
-    }
-    // Also trigger balance subscription refresh to confirm
-    setTimeout(()=>send({balance:1,subscribe:1}),500);
+    // Trust the balance subscription for real/demo accounts to avoid double-counting
+    // We only send a balance request to force an update if needed
+    setTimeout(()=>send({balance:1,subscribe:1}),200);
     return;
   }
 }
@@ -1869,18 +1854,22 @@ function buyContract(fromAI){
   if(con){toast('Already in trade','r');return;}
   if(!prevP){toast('No price yet','y');return;}
   if(isBuying){toast('Trade pending…','y');return;}
+  
+  // Always get fresh stake from input
+  const currentStake = parseFloat($('iStake').value) || stake;
   const p=prevP,d=barrierDist(p);
-  con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake,pnl:0,payout:stake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
+  
+  con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
   ticksHeld=0;drawBarriers();updateConUI();$('exitMeter').classList.add('on');
+  
   if(!fromAI)toast('Contract @ '+p.toFixed(dp)+(con.isReal?' [REAL]':' [SIM]'),'g');
+  
   if(con.isReal){
-    isBuying=true;setTimeout(()=>{isBuying=false;},12000);
-    // Deduct stake from balance immediately for correct display
-    if(realBalance!==null){
-      realBalance=parseFloat((realBalance-stake).toFixed(2));
-      updateBalanceUI();
-    }
-    send({buy:'1',price:stake,parameters:{contract_type:'ACCU',symbol:sym,amount:stake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
+    isBuying=true;
+    // Don't manually deduct stake - trust Deriv's balance subscription
+    send({buy:'1',price:currentStake,parameters:{contract_type:'ACCU',symbol:sym,amount:currentStake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
+    // Fail-safe for isBuying
+    setTimeout(()=>{isBuying=false;},10000);
   }
 }
 
@@ -1889,37 +1878,26 @@ function buyContract(fromAI){
 // ═══════════════════════════════════════════
 function closeContract(reason,fromAI){
   if(!con)return;
-  const stk=con.stake,pnl=con.pnl,payout=con.payout;
-  const tks=con.ticks,won=pnl>0;
+  const stk=con.stake,payout=con.payout;
+  const tks=con.ticks;
   const byAI=con.byAI,realId=con.realId,isReal=con.isReal;
+
+  // Calculate actual PNL. If payout is same as stake, it might be 0 but it's a win if it didn't KO.
+  // For Accumulators, even small wins are better than 0.00 log.
+  let pnl = con.pnl;
+  if(pnl === 0 && tks > 0) pnl = parseFloat((payout - stk).toFixed(2));
+  const won = pnl > 0 || (pnl === 0 && reason !== 'Deriv:lost' && reason !== 'KO');
 
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
     aiTrades++;aiPnl=parseFloat((aiPnl+pnl).toFixed(2));
     addHistItem({won,pnl,reason,ticks:tks});
-    if(won)showFlash('flashWin','WIN +$'+pnl.toFixed(2)+' ('+tks+'t)',2500);
+    if(won && pnl > 0)showFlash('flashWin','WIN +$'+pnl.toFixed(2)+' ('+tks+'t)',2500);
   }
 
-  if(isReal&&realId){
-    // For real accounts: sell the contract
-    // Balance will update via:
-    // 1. sell response (sold_for) — immediate
-    // 2. balance subscription — confirms
+  if(isReal && realId){
+    // For real accounts: just send the sell. Balance will update via subscription.
     send({sell:realId,price:0});
-    // Optimistically update balance with current known pnl
-    if(realBalance!==null&&pnl!==0){
-      realBalance=parseFloat((realBalance+pnl).toFixed(2));
-      updateBalanceUI();flashBalance();
-    }
-  }else if(!isReal){
-    // Simulation: add full payout (stake was already deducted on buy)
-    if(realBalance!==null){
-      const oldBal=realBalance;
-      realBalance=parseFloat((realBalance+payout).toFixed(2));
-      updateBalanceUI();flashBalance();
-      const diff=parseFloat((realBalance-oldBal).toFixed(2));
-      toast((diff>0?'💰 +':'💸 ')+Math.abs(diff).toFixed(2)+' → '+userCurrency+' '+realBalance.toFixed(2),diff>0?'g':'y',5000);
-    }
   }
 
   isBuying=false;con=null;clearBarriers();
