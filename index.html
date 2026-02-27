@@ -1177,25 +1177,21 @@ function handle(d){
     return;
   }
   if(t==='proposal_open_contract'){
-    const poc=d.proposal_open_contract;
-    if(!poc||!con)return;
-    if(poc.profit!==undefined)con.pnl=parseFloat(poc.profit);
-    // bid_price = current payout value (stake + accrued profit)
-    if(poc.bid_price!==undefined)con.payout=parseFloat(poc.bid_price);
-    // sell_price = final settled amount when contract closes
-    if(poc.sell_price!==undefined&&poc.sell_price>0)con.payout=parseFloat(poc.sell_price);
-    if(poc.buy_price!==undefined)con.stake=parseFloat(poc.buy_price);
-    if(poc.barrier)con.upper=parseFloat(poc.barrier);
-    if(poc.low_barrier)con.lower=parseFloat(poc.low_barrier);
-    // Update live P&L display immediately from real contract data
-    if(poc.profit!==undefined){
-      const pnlColor=con.pnl>=0?'var(--green)':'var(--red)';
-      $('sPnl').textContent=(con.pnl>=0?'+$':'-$')+Math.abs(con.pnl).toFixed(2);
-      $('sPnl').style.color=pnlColor;
-      $('sPayout').textContent='$'+(con.payout||con.stake).toFixed(2);
-    }
-    if(poc.status==='lost'||poc.status==='sold'){
-      closeContract('Deriv:'+poc.status,con.byAI);
+    const poc = d.proposal_open_contract;
+    if(!poc || !con) return;
+    
+    // ABSOLUTE SERVER TRUTH: Sync contract state ONLY from official data
+    if(poc.profit !== undefined) con.pnl = parseFloat(poc.profit);
+    if(poc.bid_price !== undefined) con.payout = parseFloat(poc.bid_price);
+    if(poc.sell_price !== undefined && poc.sell_price > 0) con.payout = parseFloat(poc.sell_price);
+    if(poc.buy_price !== undefined) con.stake = parseFloat(poc.buy_price);
+    
+    // Update UI strictly from the sync values
+    updateConUI();
+
+    // Settlement Logic: Only close when finalized
+    if(poc.status === 'lost' || poc.status === 'sold') {
+      closeContract('Deriv:' + poc.status, con.byAI);
     }
     return;
   }
@@ -1488,20 +1484,13 @@ function processTick(tick, isHistory){
 
   // ── ACTIVE CONTRACT ──
   if(con&&!exitingNow&&!isHistory){
-    con.ticks++;ticksHeld++;
-    // REAL-TIME P&L: Force update on every tick for both Real and Sim
-    const mult=Math.pow(1+gr/100,con.ticks)-1;
-    const simPnl=parseFloat((con.stake*mult).toFixed(2));
-    const simPayout=parseFloat((con.stake+simPnl).toFixed(2));
-    
+    con.ticks++; ticksHeld++;
+    // REAL-TIME P&L: For simulation, we still use local growth.
+    // For real accounts, we NO LONGER guess or fallback. We wait for poc.profit.
     if(!con.realId){
-      con.pnl=simPnl;
-      con.payout=simPayout;
-    } else {
-      // For real accounts, use the local calculation as a fallback or to provide smoother updates
-      // if the API response is slightly delayed.
-      if(con.pnl < simPnl) con.pnl = simPnl;
-      if(con.payout < simPayout) con.payout = simPayout;
+      const mult = Math.pow(1 + gr/100, con.ticks) - 1;
+      con.pnl = parseFloat((con.stake * mult).toFixed(2));
+      con.payout = parseFloat((con.stake + con.pnl).toFixed(2));
     }
 
     const dU=con.upper-p,dL=p-con.lower;
@@ -2065,25 +2054,23 @@ function onKO(price){
 // ═══════════════════════════════════════════
 function updateConUI(){
   if(!con){renderNoContract();return;}
-  // Show green dot on Stats nav button when trade is active
+  // Ensure we are using 2 decimal places for financial data to match Deriv
+  const displayPnl = parseFloat((con.pnl || 0).toFixed(2));
+  const displayPayout = parseFloat((con.payout || con.stake).toFixed(2));
+
   if($('bnTradeDot'))$('bnTradeDot').style.display='block';
-  // Show mobile quick-sell button
   if($('mobSellBtn'))$('mobSellBtn').style.display='block';
-  // Update mobile P&L row in topbar
   if($('mobPnlRow')){
-    const pnlSign=con.pnl>=0?'+':'';
-    $('mobPnlRow').textContent='📈 P&L: '+pnlSign+'$'+Math.abs(con.pnl).toFixed(2)+' | '+con.ticks+'t';
-    $('mobPnlRow').style.color=con.pnl>=0?'var(--green)':'var(--red)';
-    $('mobPnlRow').style.display='block';
+    const pnlSign = displayPnl >= 0 ? '+' : '-';
+    $('mobPnlRow').textContent = '📈 P&L: ' + pnlSign + '$' + Math.abs(displayPnl).toFixed(2) + ' | ' + con.ticks + 't';
+    $('mobPnlRow').style.color = displayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    $('mobPnlRow').style.display = 'block';
   }
-  const pnlColor=con.pnl>=0?'var(--green)':'var(--red)';
-  const elapsed=Math.round((now()-con.start)/1000);
-  const barW=Math.min(100,Math.abs(con.pnl/con.stake)*200);
-  const ep=exitProbability,rc=ep<30?'var(--green)':ep<55?'var(--gold)':'var(--red)';
-  const hs=prevP?computeHoldScore(prevP,con,tickBuf):50;
-  $('sTicks').textContent=con.ticks;
-  $('sPnl').textContent=(con.pnl>=0?'+$':'-$')+Math.abs(con.pnl).toFixed(2);$('sPnl').style.color=pnlColor;
-  $('sPayout').textContent='$'+(con.payout||con.stake).toFixed(2);
+  const pnlColor = displayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  $('sTicks').textContent = con.ticks;
+  $('sPnl').textContent = (displayPnl >= 0 ? '+$' : '-$') + Math.abs(displayPnl).toFixed(2);
+  $('sPnl').style.color = pnlColor;
+  $('sPayout').textContent = '$' + displayPayout.toFixed(2);
   $('conPanel').innerHTML=
     '<div class="contract-box">'
     +'<div class="con-hdr"><h4>'+(con.byAI?'🤖 AI ':'')+'ACTIVE'+(con.isReal?' [REAL]':' [SIM]')+'</h4><span class="pulse"></span></div>'
