@@ -1064,11 +1064,12 @@ function handle(d){
       }else{setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},3000);}
       return;
     }
-    window._authRetried=false;authed=true;
+    authed=true;
     const a=d.authorize;
     const realLoginid=a.loginid||activeLoginid;
     activeLoginid=realLoginid;userCurrency=a.currency||'USD';
     userInfo={name:a.fullname||a.loginid||'Trader',loginid:realLoginid,currency:userCurrency};
+    console.log('Authorized as:', userInfo.name, '(', activeLoginid, ')', 'Balance:', a.balance);
     realBalance=a.balance!==undefined?parseFloat(a.balance):null;
     if(realLoginid&&realLoginid.length>2&&activeToken&&activeToken.length>10){
       tokenStore[realLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual};
@@ -1969,10 +1970,28 @@ function buyContract(fromAI){
   
   ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
   
-  if(!fromAI) toast('Contract @ ' + p.toFixed(dp) + (con.isReal ? ' [DERIV]' : ' [LOCAL]'), 'g');
+  if(!fromAI) {
+    if (con.isReal) {
+      toast('🚀 Real Trade @ ' + p.toFixed(dp) + ' [DERIV]', 'g', 3000);
+    } else {
+      toast('🧪 Local Sim @ ' + p.toFixed(dp) + ' [VIRTUAL]', 'y', 3000);
+    }
+  } else {
+    if (con.isReal) {
+      toast('🤖 AI Sniper: Real Entry @ ' + p.toFixed(dp), 'g', 2000);
+    } else {
+      toast('🤖 AI Sniper: Local Sim @ ' + p.toFixed(dp), 'y', 2000);
+    }
+  }
   
   if(con.isReal){
     isBuying = true;
+    console.log('Sending buy request to Deriv:', {
+      buy: '1',
+      price: currentStake,
+      symbol: sym,
+      currency: userCurrency
+    });
     send({
       buy: '1',
       price: currentStake,
@@ -2018,6 +2037,7 @@ function closeContract(reason,fromAI){
 
   if(isReal){
     if(realId && !reason.startsWith('Deriv:')){
+      console.log('Closing Real Contract:', realId);
       send({sell: realId, price: 0});
     }
     // DERIV ACCOUNT (Real or Demo): Wait for server settlement
