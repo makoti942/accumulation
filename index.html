@@ -1036,7 +1036,15 @@ function connect(){
   ws.onclose=()=>{clearTimeout(connTO);clearInterval(pingTimer);clearInterval(heartbeatTimer);wsAlive=false;setDot('rc');$('connBanner').classList.add('show');schedReconn();};
 }
 function schedReconn(){clearTimeout(reconnTimer);reconnTimer=setTimeout(()=>{reconnDelay=Math.min(reconnDelay*1.5,15000);connect();},reconnDelay);}
-function send(obj){if(ws&&ws.readyState===1){ws.send(JSON.stringify(obj));return true;}return false;}
+function send(obj){
+  if(ws&&ws.readyState===1){
+    const msg_type=obj.proposal?'proposal':obj.buy?'buy':obj.sell?'sell':obj.authorize?'authorize':obj.balance?'balance':obj.ticks?'ticks':obj.portfolio?'portfolio':Object.keys(obj)[0]||'unknown';
+    if(['proposal','buy','sell'].includes(msg_type))console.log('[Deriv API] Sending:',msg_type,obj);
+    ws.send(JSON.stringify(obj));
+    return true;
+  }
+  return false;
+}
 
 // ═══════════════════════════════════════════
 // MESSAGE HANDLER
@@ -1044,6 +1052,7 @@ function send(obj){if(ws&&ws.readyState===1){ws.send(JSON.stringify(obj));return
 function handle(d){
   if(!d||!d.msg_type)return;
   const t=d.msg_type;
+  if(['proposal','buy','sell'].includes(t))console.log('[Deriv API] Received:',t,d);
   if(t==='pong'){lat=now()-pingT;$('metaLat').textContent=lat+'ms';$('metaLat').style.color=lat<120?'var(--green)':lat<350?'var(--gold)':'var(--red)';$('sbPing').textContent='Ping:'+lat+'ms';return;}
   if(t==='authorize'){
     if(d.error){
@@ -1062,7 +1071,7 @@ function handle(d){
     const realLoginid=a.loginid||activeLoginid;
     activeLoginid=realLoginid;userCurrency=a.currency||'USD';
     userInfo={name:a.fullname||a.loginid||'Trader',loginid:realLoginid,currency:userCurrency};
-    console.log('Authorized as:', userInfo.name, '(', activeLoginid, ')', 'Balance:', a.balance);
+    console.log('[Deriv] Authorized:', {name:userInfo.name, loginid:activeLoginid, currency:userCurrency, is_virtual:a.is_virtual, balance:a.balance});
     realBalance=a.balance!==undefined?parseFloat(a.balance):null;
     if(realLoginid&&realLoginid.length>2&&activeToken&&activeToken.length>10){
       tokenStore[realLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual};
@@ -1162,6 +1171,8 @@ function handle(d){
     if(d.error){
       isBuying=false;pendingProposal=null;
       const em=d.error.message||d.error.code||'Unknown error';
+      const ec=d.error.code||'';
+      console.error('[Deriv] Proposal error:', {code:ec, message:em, account:activeLoginid, authed, token_len:activeToken?activeToken.length:0});
       toast('Proposal error: '+em,'r',5000);
       return;
     }
@@ -1367,11 +1378,16 @@ function switchAccount(loginid){
     return;
   }
   if(con)closeContract('Account switch',false);
+  // Clear all session state for fresh authorization
   activeToken=tok;
   activeLoginid=loginid;
   authed=false;
   realBalance=null;
+  userCurrency='USD';
+  isBuying=false;
+  pendingProposal=null;
   window._authRetried=false;
+  console.log('[Account Switch] Switching to',loginid);
   lsSet('deriv_active',loginid);
   $('hBalance').textContent='Switching…';
   $('userBal').textContent='Switching…';
@@ -2009,7 +2025,16 @@ function buyContract(fromAI){
     isBuying = true;
     const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
     toast(label + ' [' + acctType + '] Requesting proposal…', 'p', 2000);
-    console.log('[Deriv] Sending proposal request:', {symbol: sym, amount: currentStake, growth_rate: gr/100, currency: userCurrency});
+    console.log('[Deriv] Sending proposal request:', {
+      symbol: sym,
+      amount: currentStake,
+      growth_rate: gr/100,
+      currency: userCurrency,
+      account: activeLoginid,
+      is_virtual: acctType === 'DEMO',
+      authed: authed,
+      token_len: activeToken ? activeToken.length : 0
+    });
 
     // STEP 1: Request a proposal from Deriv to get real barriers and price
     send({
@@ -2022,14 +2047,16 @@ function buyContract(fromAI){
       currency: userCurrency
     });
 
-    // Safety timeout: cancel if no response within 12 seconds
+    // Safety timeout: cancel if no response within 30 seconds
     setTimeout(() => {
       if(isBuying && (!con || !con.realId)){
         isBuying = false; pendingProposal = null;
         if(con) { con = null; clearBarriers(); renderNoContract(); }
-        toast('Deriv proposal timed out — please check connection', 'r', 5000);
+        console.error('[Deriv] Proposal timeout. Account:', activeLoginid, 'Authed:', authed);
+        toast('Proposal timed out. Reconnecting...', 'r', 5000);
+        setTimeout(() => { reconnDelay = 800; connect(); }, 2000);
       }
-    }, 12000);
+    }, 30000);
   }
 
 // ═══════════════════════════════════════════
