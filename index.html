@@ -1101,10 +1101,14 @@ function handle(d){
       // Flash and show toast for every meaningful balance change
       if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
         const diff=+(nb-ob).toFixed(2);
-        // Only show notification for gains or significant losses (not small sync adjustments)
-        if(diff > 0.001 || diff < -0.5) {
+        // During a trade, Deriv might send updates that reflect the deducted stake.
+        // We only want to notify the user of meaningful gains (wins) or actual losses.
+        if(diff > 0.01) {
           flashBalance();
-          toast((diff>0?"💰 Balance +":"💸 Balance ")+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),diff>0?"g":"y",5000);
+          toast("💰 Balance +"+diff.toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),"g",5000);
+        } else if (diff < -0.5 && !con) {
+          // Only notify of losses if we aren't currently in a trade (to avoid stake-deduction confusion)
+          toast("💸 Balance -"+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),"y",5000);
         }
       }
     }
@@ -1985,9 +1989,8 @@ function buyContract(fromAI){
   
   if(con.isReal){
     isBuying=true;
-    // CRITICAL: DO NOT manually deduct stake for real accounts.
-    // Deriv automatically deducts the stake and sends a balance update via WebSocket.
-    // Manually deducting here causes a "double deduction" once the server update arrives.
+    // DO NOT manually deduct stake for real accounts here.
+    // Deriv's server will deduct it and send an official balance update.
     send({buy:'1',price:currentStake,parameters:{contract_type:'ACCU',symbol:sym,amount:currentStake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
     // Fail-safe for isBuying
     setTimeout(()=>{isBuying=false;},10000);
@@ -2003,50 +2006,53 @@ function closeContract(reason,fromAI){
   const tks=con.ticks;
   const byAI=con.byAI,realId=con.realId,isReal=con.isReal;
 
-  // Calculate actual PNL.
-  // For Accumulators, the profit is based on the growth rate per tick.
-  // We use the most recent con.payout which is updated via proposal_open_contract or calculated locally.
-  let payout = con.payout || stk;
-  let pnl = con.pnl || 0;
-  
-  // Ensure pnl and payout are consistent
-  if (pnl === 0 && payout > stk) pnl = payout - stk;
-  if (payout === stk && pnl > 0) payout = stk + pnl;
-
   // CRITICAL: A win is only if reason is NOT lost/KO
   const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
   
-  // finalPayout = full amount returned to balance: stake + profit (on win), 0 (on loss/KO)
-  const finalPayout = won ? parseFloat(payout.toFixed(2)) : 0;
-  const actualProfit = won ? parseFloat((finalPayout - stk).toFixed(2)) : -stk;
+  // P&L Calculation: Accumulators profit is growth-based.
+  // We prioritize Deriv's reported payout if available, otherwise use local calculation.
+  let payout = con.payout || stk;
+  let pnl = con.pnl || 0;
+  
+  // Ensure consistency: If we won, payout MUST be >= stake
+  if (won) {
+    if (payout < stk) payout = stk + Math.max(0, pnl);
+    if (pnl <= 0 && payout > stk) pnl = payout - stk;
+  } else {
+    payout = 0;
+    pnl = -stk;
+  }
+
+  const finalPayout = parseFloat(payout.toFixed(2));
+  const actualProfit = parseFloat(pnl.toFixed(2));
 
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
     aiTrades++;
     aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
     addHistItem({won,pnl:actualProfit,reason,ticks:tks});
-    if(won && actualProfit > 0)showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
+    if(won) showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
   }
 
-  // Update local balance immediately ONLY for SIM accounts.
-  // For REAL accounts, we wait for Deriv's official balance update to ensure 100% accuracy.
-  if(realBalance !== null && !isReal){
+  // Update local balance immediately for BOTH Real and Sim to prevent visual delay.
+  // For Real accounts, we later sync with Deriv's official balance.
+  if(realBalance !== null){
     if(won && finalPayout > 0){
-      // Ensure we add the FULL finalPayout (stake + profit)
+      // The stake was deducted at entry. We now add the FULL payout (stake + profit).
       realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      if(acct) acct.balance=realBalance;
+      updateBalanceUI();
+      flashBalance();
     }
-    // Update the account list as well
-    const acct=accountList.find(a=>a.loginid===activeLoginid);
-    if(acct) acct.balance=realBalance;
-    
-    updateBalanceUI();
-    if(won) flashBalance();
   }
 
   if(isReal && realId){
+    // Explicitly sell the contract on Deriv
     send({sell:realId,price:0});
-    // Poll balance after a short delay to sync with Deriv's official state
+    // Fail-safe: Force a balance refresh from Deriv's server after 1.5s and 3s
     setTimeout(()=>send({balance:1}), 1500);
+    setTimeout(()=>send({balance:1}), 3500);
   }
 
   isBuying=false;con=null;clearBarriers();
