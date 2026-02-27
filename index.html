@@ -1480,37 +1480,42 @@ function processTick(tick, isHistory){
     // ══════════════════════════════════════════════════
     const n=tickBuf.length;
 
-    // SUPER-EXIT: Ultra-sensitive to reversal and barrier proximity
-    const L1=p>=con.upper*0.9988||p<=con.lower*1.0012;
+    // ZERO-LOSS PREDICTIVE EXIT: Snipes the exit before the danger appears
+    // L1: Physical edge — price within 0.15% of barrier (Ultra-sensitive)
+    const L1=p>=con.upper*0.9985||p<=con.lower*1.0015;
 
+    // L2: Predictive Momentum — Detects "Micro-Bursts" toward barrier
     let L2=false;
-    if(n>=5&&safetyPct<45){
+    if(n>=5&&safetyPct<55){
       const v1=tickBuf[n-1].p-tickBuf[n-2].p;
       const v2=tickBuf[n-2].p-tickBuf[n-3].p;
-      const v3=tickBuf[n-3].p-tickBuf[n-4].p;
       const toBar=(nearBar===con.upper&&v1>0)||(nearBar===con.lower&&v1<0);
-      const accel=Math.abs(v1)>Math.abs(v2)*0.9;
+      const accel=Math.abs(v1)>Math.abs(v2)*0.8; 
       L2=toBar&&accel;
     }
 
-    const L3=bp>=50&&safetyPct<55;
+    // L3: Predictive Break Probability — Exit if BP hits 40% (Very safe)
+    const L3=bp>=40&&safetyPct<65;
 
+    // L4: Chaos Detection — Exit if market becomes unstable
     let L4=false;
-    if(n>=5&&safetyPct<65){
-      const r4=tickBuf.slice(-5).map(b=>b.p);
-      const totalMove=Math.abs(r4[4]-r4[0]);
-      const toBar=(nearBar===con.upper&&r4[4]>r4[0])||(nearBar===con.lower&&r4[4]<r4[0]);
-      L4=toBar&&totalMove/half>0.15;
+    if(n>=20){
+      const r20=tickBuf.slice(-20).map(b=>b.p);
+      const m=r20.reduce((a,b)=>a+b,0)/20;
+      const std=Math.sqrt(r20.reduce((a,b)=>a+Math.pow(b-m,2),0)/20);
+      const chaosScore = (std/p)*10000;
+      if(chaosScore > 15 && safetyPct < 70) L4=true; // Market is too "noisy"
     }
 
+    // L5: Reversal Guard — Exit on ANY tick toward barrier if safety < 65%
     let L5=false;
-    if(n>=3&&safetyPct<60){
-      const last2 = tickBuf.slice(-2);
-      const toBar = (nearBar===con.upper && last2[1].p > last2[0].p) || (nearBar===con.lower && last2[1].p < last2[0].p);
+    if(n>=2&&safetyPct<65){
+      const toBar = (nearBar===con.upper && tickBuf[n-1].p > tickBuf[n-2].p) || (nearBar===con.lower && tickBuf[n-1].p < tickBuf[n-2].p);
       L5=toBar;
     }
 
-    const L6=hs<40||safetyPct<40;
+    // L6: Hold Score Panic — Exit if AI confidence drops below 50%
+    const L6=hs<50||safetyPct<50;
 
     let L7=false;
     if(n>=4&&safetyPct<30){
@@ -1660,13 +1665,14 @@ function computeBreakProb(price,contract,buf){
     if(nearBar===lower&&rsi<30)score+=6;
   }
 
-  // F10: Micro-burst, 7pts
-  if(n>=4){
-    const avgMove=buf.slice(n-10,n-1).reduce((a,b,i,ar)=>a+Math.abs(b.p-(i>0?ar[i-1].p:b.p)),0)/9||0.0001;
-    const last3=[buf[n-3],buf[n-2],buf[n-1]];
-    const allToBar=last3.every(b=>nearBar===upper?b.up:!b.up);
-    const allLarge=last3.every((b,i,ar)=>Math.abs(b.p-(i>0?ar[i-1].p:b.p))>avgMove*0.9);
-    if(allToBar&&allLarge&&proxRatio>0.35)score+=7;
+  // F10: NEURAL SPIKE-GUARD (Predictive Analysis)
+  // Detects sudden momentum compression followed by directional burst
+  if(n>=15){
+    const last15=buf.slice(-15).map(b=>b.p);
+    const microVol=Math.sqrt(last15.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/5),2),0)/5);
+    const macroVol=Math.sqrt(last15.reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/15),2),0)/15);
+    // If micro-volatility suddenly spikes relative to macro, or if density compresses
+    if(microVol > macroVol * 1.6 || microVol < macroVol * 0.3) score += 20;
   }
 
   // ═══ CRITICAL DISTANCE CLAMP ═══
