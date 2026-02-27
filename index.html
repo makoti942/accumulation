@@ -924,16 +924,22 @@ function setDot(s){$('wsDot').className='ws-dot '+(s==='on'?'on':s==='err'?'err'
 // OAUTH
 // ═══════════════════════════════════════════
 function parseOAuthURL(){
-  const p=new URLSearchParams(window.location.search);
-  const found={};let firstToken=null,firstLoginid='';
-  for(let i=1;i<=10;i++){
-    const tok=p.get('token'+i),acct=p.get('acct'+i),cur=p.get('cur'+i);
-    if(tok&&acct&&tok.length>10){
-      found[acct]={token:tok,currency:cur||'USD'};
-      if(!firstToken){firstToken=tok;firstLoginid=acct;}
+  const p = new URLSearchParams(window.location.search);
+  const found = {};
+  let firstToken = null, firstLoginid = '';
+  for (let i = 1; p.has('acct' + i); i++) {
+    const loginid = p.get('acct' + i);
+    const token = p.get('token' + i);
+    const currency = p.get('cur' + i);
+    if (token && loginid && token.length > 10) {
+      found[loginid] = { token: token, currency: currency || 'USD' };
+      if (!firstToken) {
+        firstToken = token;
+        firstLoginid = loginid;
+      }
     }
   }
-  return{tokens:found,first:firstToken,firstLoginid};
+  return { tokens: found, first: firstToken, firstLoginid: firstLoginid };
 }
 function loadTokenStore(){try{const s=lsGet('deriv_ts');if(s)tokenStore=JSON.parse(s);}catch(e){tokenStore={};}}
 function saveTokenStore(){lsSet('deriv_ts',JSON.stringify(tokenStore));}
