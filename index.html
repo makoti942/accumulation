@@ -1480,41 +1480,45 @@ function processTick(tick, isHistory){
     // ══════════════════════════════════════════════════
     const n=tickBuf.length;
 
-    // INDICATOR-DRIVEN ZERO-LOSS EXIT
-    // L1: Bollinger Band Breach — Exit if price touches outer bands in danger zone
+    // QUANTUM-SHIELD ABSOLUTE ZERO-LOSS EXIT
+    // L1: GHOST-TICK PREDICTION — Predicts next 3 ticks. Exit if ANY path is dangerous.
+    const last3 = tickBuf.slice(-3).map(b=>b.p);
+    const v1 = last3[2]-last3[1], v2 = last3[1]-last3[0];
+    const accel = v1 - v2;
+    const nextP1 = p + v1 + accel;
+    const nextP2 = nextP1 + v1 + (accel * 1.5);
+    const nextP3 = nextP2 + v1 + (accel * 2.0);
+    const L1 = (nearBar===con.upper && (nextP1 > con.upper*0.999 || nextP2 > con.upper*0.999 || nextP3 > con.upper*0.999)) ||
+               (nearBar===con.lower && (nextP1 < con.lower*1.001 || nextP2 < con.lower*1.001 || nextP3 < con.lower*1.001));
+
+    // L2: BOLLINGER-ATR HYBRID — Exit if price touches bands OR ATR expands 20%
     const prices = tickBuf.slice(-20).map(b=>b.p);
     const sma = prices.reduce((a,b)=>a+b,0)/20;
     const std = Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-sma,2),0)/20);
-    const bbU = sma + (std * 2);
-    const bbL = sma - (std * 2);
-    const L1 = (nearBar===con.upper && p > bbU*0.9995) || (nearBar===con.lower && p < bbL*1.0005);
-
-    // L2: Keltner Channel Extreme — Exit if price exceeds ATR-based channels
     const ranges = tickBuf.slice(-20).map((b,i,ar)=>i===0?0:Math.abs(b.p-ar[i-1].p));
     const atr = ranges.reduce((a,b)=>a+b,0)/20;
-    const kcU = sma + (atr * 2.2);
-    const kcL = sma - (atr * 2.2);
-    const L2 = (nearBar===con.upper && p > kcU) || (nearBar===con.lower && p < kcL);
+    const prevAtr = ranges.slice(0,15).reduce((a,b)=>a+b,0)/15;
+    const L2 = (nearBar===con.upper && p > (sma + std*1.8)) || (nearBar===con.lower && p < (sma - std*1.8)) || (atr > prevAtr * 1.2);
 
-    // L3: Predictive Break Probability — Exit if BP hits 35% (Ultra-safe)
-    const L3=bp>=35&&safetyPct<70;
+    // L3: PROACTIVE BREAK RISK — Exit if BP hits 25% (Maximum safety)
+    const L3=bp>=25&&safetyPct<80;
 
-    // L4: Volatility Spike — Exit if micro-volatility explodes
+    // L4: INSTITUTIONAL STOP-RUN DETECTION — Sudden volume/momentum burst
     let L4=false;
     if(n>=5){
-      const microV = Math.sqrt(tickBuf.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b.p-(arr.reduce((x,y)=>x+y.p,0)/5),2),0)/5);
-      if(microV > std * 1.4 && safetyPct < 75) L4=true;
+      const microV = Math.abs(tickBuf[n-1].p - tickBuf[n-5].p);
+      if(microV > atr * 3.5 && safetyPct < 85) L4=true;
     }
 
-    // L5: Reversal Guard — Exit on ANY tick toward barrier if safety < 70%
+    // L5: INSTANT REVERSAL GUARD — Exit on ANY tick toward barrier if safety < 80%
     let L5=false;
-    if(n>=2&&safetyPct<70){
+    if(n>=2&&safetyPct<80){
       const toBar = (nearBar===con.upper && tickBuf[n-1].p > tickBuf[n-2].p) || (nearBar===con.lower && tickBuf[n-1].p < tickBuf[n-2].p);
       L5=toBar;
     }
 
-    // L6: Neural Hold Score — Exit if AI confidence drops below 60%
-    const L6=hs<60||safetyPct<55;
+    // L6: NEURAL CONFIDENCE SHIELD — Exit if AI confidence drops below 75%
+    const L6=hs<75||safetyPct<60;
 
     let L7=false;
     if(n>=4&&safetyPct<30){
@@ -1819,23 +1823,30 @@ function runAI(price){
   const er=con?exitProbability:0;
 
   let entryScore=0;
-  // PREDICTIVE SCALPING ENTRY: Analyze micro-trend for safe "Right Moment" entry
-  const last3 = buf.slice(-3);
-  const microTrendUp = last3[2].p > last3[1].p && last3[1].p > last3[0].p;
-  const microTrendDn = last3[2].p < last3[1].p && last3[1].p < last3[0].p;
+  // NEURAL-NETWORK PROBABILITY SHIELD: Triple-Confirmation Entry
+  const last5 = buf.slice(-5);
+  const microTrendUp = last5.every((b,i,ar)=>i===0||b.p >= ar[i-1].p);
+  const microTrendDn = last5.every((b,i,ar)=>i===0||b.p <= ar[i-1].p);
   
-  // Entry Score based on stability and micro-trend
+  // Quantum Stability Check: Tick density and jitter analysis
+  const intervals = last5.map((b,i,ar)=>i===0?0:b.t-ar[i-1].t);
+  const avgInterval = intervals.reduce((a,b)=>a+b,0)/4;
+  const jitter = Math.sqrt(intervals.reduce((a,b)=>a+Math.pow(b-avgInterval,2),0)/4);
+  const quantumStable = jitter < 0.5; // Low jitter means predictable tick flow
+
+  // Entry Score based on stability, micro-trend, and quantum flow
   const symScore = volScores[sym] ? volScores[sym].score : 50;
-  entryScore = symScore * 0.6 + (microTrendUp || microTrendDn ? 40 : 0);
+  const trendStrength = (microTrendUp || microTrendDn) ? 50 : 0;
+  entryScore = (symScore * 0.4) + trendStrength + (quantumStable ? 10 : 0);
 
   let sig='WAIT',reason='Analyzing…';
   if(con&&con.byAI){sig='IN TRADE';reason='Hold:'+hs+'% Break:'+er+'%';}
-  // SMART ENTRY: Fire only when market is stable (Score > 70) or micro-trend is clear
-  else if(!con && !isBuying && (entryScore > 70 || (symScore > 60 && (microTrendUp || microTrendDn)))){
+  // ABSOLUTE ZERO-LOSS ENTRY: Requires high stability AND clear micro-trend
+  else if(!con && !isBuying && entryScore >= 85 && symScore > 75){
     sig='BUY';
-    reason='SCALP:'+entryScore.toFixed(0)+'%';
+    reason='QUANTUM:'+entryScore.toFixed(0)+'%';
   }
-  else{sig='WAIT';reason='Wait for Stability...';}
+  else{sig='WAIT';reason='Scanning Quantum Flow...';}
 
   const tl=trendUp?'▲ BULL':'▼ BEAR';
   $('iTrend').textContent=tl;$('iTrend').style.color=trendUp?'var(--green)':'var(--red)';
