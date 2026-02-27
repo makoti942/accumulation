@@ -1081,7 +1081,8 @@ function handle(d){
     send({portfolio:1,contract_type:['ACCU']});
     // Re-subscribe all ticks
     ALL_SYMS.forEach(s=>send({ticks:s.sym,subscribe:1}));
-    // Request fresh balance immediately
+    // Request fresh balance and re-subscribe to balance updates
+    send({balance:1,subscribe:1});
     setTimeout(()=>send({balance:1}),500);
     const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
     toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
@@ -1158,25 +1159,33 @@ function handle(d){
     return;
   }
   if(t==='proposal'){
-    // Server returned a proposal — now execute the buy using the proposal id
     if(d.error){
-      isBuying=false;pendingProposal=null;proposalReqId=null;
+      isBuying=false;pendingProposal=null;
       const em=d.error.message||d.error.code||'Unknown error';
       toast('Proposal error: '+em,'r',5000);
-      if(con){con=null;clearBarriers();renderNoContract();}
       return;
     }
     const prop=d.proposal;
     if(!prop||!isBuying)return;
-    // Store server-side barriers and details from proposal
     pendingProposal=prop;
-    // Update local con with REAL server barriers
-    if(con){
-      if(prop.barrier)con.upper=parseFloat(prop.barrier);
-      if(prop.low_barrier)con.lower=parseFloat(prop.low_barrier);
-      if(prop.spot)con.entry=parseFloat(prop.spot);
-      drawBarriers();updateConUI();
-    }
+    
+    // ONLY NOW we create the contract object because the server confirmed the parameters
+    con = {
+      entry: parseFloat(prop.spot),
+      upper: parseFloat(prop.barrier),
+      lower: parseFloat(prop.low_barrier),
+      ticks: 0,
+      stake: parseFloat(prop.ask_price),
+      pnl: 0,
+      payout: parseFloat(prop.ask_price),
+      start: now(),
+      byAI: !!(window._lastEntryFromAI),
+      realId: null,
+      isReal: true
+    };
+    
+    ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
+    
     // Execute the actual buy using the proposal id
     send({buy:prop.id,price:prop.ask_price});
     return;
@@ -1192,14 +1201,30 @@ function handle(d){
       return;
     }
     const bd=d.buy;
-    if(bd&&con){
-      con.realId=bd.contract_id;
-      // Use server-confirmed barriers from buy response (most authoritative)
-      if(bd.barrier)con.upper=parseFloat(bd.barrier);
-      if(bd.low_barrier)con.lower=parseFloat(bd.low_barrier);
-      if(bd.start_time)con.start=bd.start_time;
+    if(bd){
+      // If for some reason con was cleared, re-create it from buy data
+      if(!con){
+        con = {
+          entry: bd.start_time_spot ? parseFloat(bd.start_time_spot) : prevP,
+          upper: bd.barrier ? parseFloat(bd.barrier) : (prevP + barrierDist(prevP)),
+          lower: bd.low_barrier ? parseFloat(bd.low_barrier) : (prevP - barrierDist(prevP)),
+          ticks: 0,
+          stake: parseFloat(bd.buy_price || 0),
+          pnl: 0,
+          payout: parseFloat(bd.buy_price || 0),
+          start: bd.start_time || now(),
+          byAI: !!(window._lastEntryFromAI),
+          realId: bd.contract_id,
+          isReal: true
+        };
+      } else {
+        con.realId=bd.contract_id;
+        if(bd.barrier)con.upper=parseFloat(bd.barrier);
+        if(bd.low_barrier)con.lower=parseFloat(bd.low_barrier);
+        if(bd.start_time)con.start=bd.start_time;
+      }
       send({proposal_open_contract:1,contract_id:con.realId,subscribe:1});
-      drawBarriers();toast('✅ Contract open · ID:'+bd.contract_id,'g',3000);
+      drawBarriers();updateConUI();toast('✅ Contract confirmed by Deriv · ID:'+bd.contract_id,'g',3000);
     }
     return;
   }
@@ -1515,15 +1540,11 @@ function processTick(tick, isHistory){
   }
 
   // ── ACTIVE CONTRACT ──
-  if(con&&!exitingNow&&!isHistory){
+  // Only process the active contract if it has been confirmed by Deriv (has realId)
+  if(con && con.realId && !exitingNow && !isHistory){
     con.ticks++; ticksHeld++;
-    // REAL-TIME P&L: For simulation, we still use local growth.
-    // For real accounts, we NO LONGER guess or fallback. We wait for poc.profit.
-    if(!con.realId){
-      const mult = Math.pow(1 + gr/100, con.ticks) - 1;
-      con.pnl = parseFloat((con.stake * mult).toFixed(2));
-      con.payout = parseFloat((con.stake + con.pnl).toFixed(2));
-    }
+    // P&L is updated strictly from Deriv API (proposal_open_contract)
+    // No local simulation fallback here to ensure account sync.
 
     const dU=con.upper-p,dL=p-con.lower;
     const half=(con.upper-con.lower)/2;
@@ -1663,7 +1684,7 @@ function processTick(tick, isHistory){
 // CRITICAL: Distance clamp ensures score can ONLY be high near barrier
 // ═══════════════════════════════════════════
 function computeBreakProb(price,contract,buf){
-  if(!contract||buf.length<20)return 0;
+  if(!contract||!contract.upper||!contract.lower||buf.length<20)return 0;
   let score=0;
   const n=buf.length;
   const upper=contract.upper,lower=contract.lower;
@@ -1980,31 +2001,12 @@ function buyContract(fromAI){
     if(!prevP){toast('No price yet — wait for tick data','y');return;}
     if(isBuying){toast('Trade pending…','y');return;}
 
+    window._lastEntryFromAI = !!fromAI;
     const currentStake = parseFloat($('stkInput').value) || stake;
-    const p = prevP;
-    const d = barrierDist(p);
     const isVirtual = accountList.find(a=>a.loginid===activeLoginid);
     const acctType = (isVirtual && isVirtual.is_virtual) ? 'DEMO' : 'REAL';
 
-    // Create a provisional contract object with estimated barriers.
-    // Barriers will be OVERWRITTEN with real server values once proposal/buy response arrives.
-    con = {
-      entry: p,
-      upper: parseFloat((p + d).toFixed(dp + 2)),
-      lower: parseFloat((p - d).toFixed(dp + 2)),
-      ticks: 0,
-      stake: currentStake,
-      pnl: 0,
-      payout: currentStake,
-      start: now(),
-      byAI: !!fromAI,
-      realId: null,
-      isReal: true  // Always true — we only trade via Deriv account (real or demo)
-    };
-
-    ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
     isBuying = true;
-
     const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
     toast(label + ' [' + acctType + '] Requesting proposal…', 'p', 2000);
     console.log('[Deriv] Sending proposal request:', {symbol: sym, amount: currentStake, growth_rate: gr/100, currency: userCurrency});
@@ -2020,12 +2022,12 @@ function buyContract(fromAI){
       currency: userCurrency
     });
 
-    // Safety timeout: cancel if no proposal response within 12 seconds
+    // Safety timeout: cancel if no response within 12 seconds
     setTimeout(() => {
-      if(isBuying && !con.realId){
+      if(isBuying && (!con || !con.realId)){
         isBuying = false; pendingProposal = null;
-        con = null; clearBarriers(); renderNoContract();
-        toast('Proposal timed out — please retry', 'r', 5000);
+        if(con) { con = null; clearBarriers(); renderNoContract(); }
+        toast('Deriv proposal timed out — please check connection', 'r', 5000);
       }
     }, 12000);
   }
