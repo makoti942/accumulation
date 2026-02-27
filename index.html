@@ -1076,6 +1076,38 @@ function handle(d){
     if(ts===sym)processTick(tk);
     return;
   }
+  if(t==='history'){
+    const h=d.history;
+    if(h && h.prices && h.times){
+      const ts=d.echo_req.ticks_history;
+      if(!symBufs[ts])symBufs[ts]=[];
+      
+      // Clear current tickBuf if this is the active symbol
+      if(ts===sym) {
+        tickBuf=[];
+        priceHist=[];
+        hi=-Infinity; lo=Infinity;
+      }
+
+      h.prices.forEach((p,i)=>{
+        const price=parseFloat(p);
+        symBufs[ts].push(price);
+        if(ts===sym){
+          const tk={symbol:ts,quote:price,epoch:h.times[i]};
+          processTick(tk,true); // Pass true to indicate historical tick
+        }
+      });
+      
+      if(ts===sym) {
+        analyzeHistoricalBreaks(ts);
+        updatePatternUI(ts);
+        toast('Loaded 100 historical ticks for '+ts,'g');
+      }
+      
+      if(symBufs[ts].length>TICK_BUF)symBufs[ts]=symBufs[ts].slice(-TICK_BUF);
+    }
+    return;
+  }
   if(t==='portfolio'){
     if(d.error)return;
     const open=((d.portfolio&&d.portfolio.contracts)||[]).filter(c=>c.contract_type==='ACCU');
@@ -1339,43 +1371,77 @@ function updatePatternUI(symKey){
   $('infoPatExit').textContent='Exit@'+s.safeExit+'t';
 }
 
+function analyzeHistoricalBreaks(symKey) {
+  if (tickBuf.length < 20) return;
+  const hist = [];
+  // Simulate 10 random entries in the last 100 ticks to see where they would have broken
+  for (let i = 0; i < 10; i++) {
+    const startIdx = Math.floor(Math.random() * (tickBuf.length - 15));
+    const entryPrice = tickBuf[startIdx].p;
+    const dist = barrierDist(entryPrice);
+    const upper = entryPrice + dist;
+    const lower = entryPrice - dist;
+    
+    let ticks = 0;
+    for (let j = startIdx + 1; j < tickBuf.length; j++) {
+      ticks++;
+      if (tickBuf[j].p >= upper || tickBuf[j].p <= lower) {
+        hist.push(ticks);
+        break;
+      }
+      // If it didn't break by the end of history, assume it lasted at least this long
+      if (j === tickBuf.length - 1) hist.push(ticks + 5); 
+    }
+  }
+  if (hist.length > 0) {
+    breakHistory[symKey] = hist;
+  }
+}
+
 // ═══════════════════════════════════════════
 // TICK PROCESSING
 // ═══════════════════════════════════════════
-function processTick(tick){
+function processTick(tick, isHistory){
   const p=parseFloat(tick.quote),t=tick.epoch;
   if(p>hi)hi=p;if(p<lo)lo=p;
   const chg=prevP!==null?p-prevP:0;
   const pct=prevP!==null?(chg/prevP)*100:0;
   const up=chg>=0;
 
-  $('priceEl').textContent=p.toFixed(dp);
-  $('priceEl').className='price-main '+(up?'up':'dn');
-  $('priceChg').textContent=(up?'+':'')+pct.toFixed(4)+'%';
-  $('priceChg').className='price-chg '+(up?'ub':'db');
-  $('metaH').textContent='H:'+hi.toFixed(dp);
-  $('metaL').textContent='L:'+lo.toFixed(dp);
-  $('mobPrice').textContent=sym+' '+p.toFixed(dp);
+  if(!isHistory){
+    $('priceEl').textContent=p.toFixed(dp);
+    $('priceEl').className='price-main '+(up?'up':'dn');
+    $('priceChg').textContent=(up?'+':'')+pct.toFixed(4)+'%';
+    $('priceChg').className='price-chg '+(up?'ub':'db');
+    $('metaH').textContent='H:'+hi.toFixed(dp);
+    $('metaL').textContent='L:'+lo.toFixed(dp);
+    $('mobPrice').textContent=sym+' '+p.toFixed(dp);
+  }
 
   const pt={time:t,value:p};
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
-  try{area.update(pt);}catch(e){}
-  appendBarrierPts(t);
+  if(!isHistory){
+    try{area.update(pt);}catch(e){}
+    appendBarrierPts(t);
+  }
 
   tickBuf.push({p,t,chg,up});
   if(tickBuf.length>TICK_BUF)tickBuf.shift();
-  $('infoBuf').textContent=tickBuf.length+'/100';
-  $('feedPulse').style.opacity='1';
-  setTimeout(()=>$('feedPulse').style.opacity='0.3',150);
+  
+  if(!isHistory){
+    $('infoBuf').textContent=tickBuf.length+'/100';
+    $('feedPulse').style.opacity='1';
+    setTimeout(()=>$('feedPulse').style.opacity='0.3',150);
+  }
 
-  if(!con&&prevP!==null){
+  if(!con&&prevP!==null&&!isHistory){
     const bd=barrierDist(p);
     $('bUpper').textContent=(p+bd).toFixed(dp);$('bLower').textContent=(p-bd).toFixed(dp);
     $('bEntry').textContent='—';$('infoBarrier').textContent='±'+bd.toFixed(dp);
   }
 
   // ── ACTIVE CONTRACT ──
-  if(con&&!exitingNow){
+  if(con&&!exitingNow&&!isHistory){
     con.ticks++;ticksHeld++;
     // Simulate payout growth for non-real contracts
     if(!con.realId){
@@ -1404,52 +1470,41 @@ function processTick(tick){
 
     // ══════════════════════════════════════════════════
     // 11-LAYER PURE MARKET-ANALYSIS SNIPER EXIT
-    // ZERO tick-count based exits — all purely analysis driven
-    // Every layer requires safetyPct to be in danger zone
     // ══════════════════════════════════════════════════
     const n=tickBuf.length;
 
-    // L1: Physical edge — price within 0.04% of barrier
-    const L1=p>=con.upper*0.9996||p<=con.lower*1.0004;
+    // SUPER-EXIT: Ultra-sensitive to reversal and barrier proximity
+    const L1=p>=con.upper*0.9988||p<=con.lower*1.0012;
 
-    // L2: Momentum burst — velocity AND acceleration toward barrier in tight zone
     let L2=false;
-    if(n>=5&&safetyPct<20){
+    if(n>=5&&safetyPct<45){
       const v1=tickBuf[n-1].p-tickBuf[n-2].p;
       const v2=tickBuf[n-2].p-tickBuf[n-3].p;
       const v3=tickBuf[n-3].p-tickBuf[n-4].p;
       const toBar=(nearBar===con.upper&&v1>0)||(nearBar===con.lower&&v1<0);
-      const accel=Math.abs(v1)>Math.abs(v2)&&Math.abs(v2)>=Math.abs(v3)*0.7;
+      const accel=Math.abs(v1)>Math.abs(v2)*0.9;
       L2=toBar&&accel;
     }
 
-    // L3: Break probability >= 72% AND safety < 35%
-    const L3=bp>=72&&safetyPct<35;
+    const L3=bp>=50&&safetyPct<55;
 
-    // L4: Price moved >30% of half-gap toward barrier in 5 ticks
     let L4=false;
-    if(n>=6&&safetyPct<50){
-      const r5=tickBuf.slice(-6).map(b=>b.p);
-      const totalMove=Math.abs(r5[5]-r5[0]);
-      const toBar=(nearBar===con.upper&&r5[5]>r5[0])||(nearBar===con.lower&&r5[5]<r5[0]);
-      L4=toBar&&totalMove/half>0.30;
+    if(n>=5&&safetyPct<65){
+      const r4=tickBuf.slice(-5).map(b=>b.p);
+      const totalMove=Math.abs(r4[4]-r4[0]);
+      const toBar=(nearBar===con.upper&&r4[4]>r4[0])||(nearBar===con.lower&&r4[4]<r4[0]);
+      L4=toBar&&totalMove/half>0.15;
     }
 
-    // L5: 4 consecutive ticks toward barrier AND safety < 40%
     let L5=false;
-    if(n>=5&&safetyPct<40){
-      let streak=0;
-      for(let i=n-1;i>=Math.max(0,n-5);i--){
-        const tw=(nearBar===con.upper&&tickBuf[i].up)||(nearBar===con.lower&&!tickBuf[i].up);
-        if(tw)streak++;else break;
-      }
-      L5=streak>=4;
+    if(n>=3&&safetyPct<60){
+      const last2 = tickBuf.slice(-2);
+      const toBar = (nearBar===con.upper && last2[1].p > last2[0].p) || (nearBar===con.lower && last2[1].p < last2[0].p);
+      L5=toBar;
     }
 
-    // L6: Hold score collapsed AND in danger zone
-    const L6=hs<15&&safetyPct<35;
+    const L6=hs<40||safetyPct<40;
 
-    // L7: Price tested within 0.08% of barrier in last 4 ticks AND safety < 30%
     let L7=false;
     if(n>=4&&safetyPct<30){
       const last4=tickBuf.slice(-4).map(b=>b.p);
@@ -1458,7 +1513,6 @@ function processTick(tick){
       L7=testU>0.9992||testL>0.9992;
     }
 
-    // L8: All last 6 moves same direction toward barrier AND each accelerating
     let L8=false;
     if(n>=7&&safetyPct<50){
       const moves=[];
@@ -1469,7 +1523,6 @@ function processTick(tick){
       L8=allToBar&&accelerating;
     }
 
-    // L9: Composite — break prob + proximity + velocity all aligned
     let L9=false;
     if(n>=8&&bp>=55&&safetyPct<25){
       const vel5=(tickBuf[n-1].p-tickBuf[n-5].p);
@@ -1478,7 +1531,6 @@ function processTick(tick){
       L9=toBar&&velPct>0.15;
     }
 
-    // L10: RSI extreme close to barrier
     let L10=false;
     if(n>=10&&safetyPct<35){
       let g=0,l=0;
@@ -1489,7 +1541,6 @@ function processTick(tick){
       L10=extremeUp||extremeDn;
     }
 
-    // L11: Micro-burst — last 4 ticks all large AND toward barrier AND safety < 45%
     let L11=false;
     if(n>=12&&safetyPct<45){
       const avgSz=tickBuf.slice(n-12,n-4).reduce((a,b)=>a+Math.abs(b.chg),0)/8||0.0001;
@@ -1509,16 +1560,19 @@ function processTick(tick){
     }
 
     updateConUI();
-    // Real barrier hit detection
     if(p>=con.upper||p<=con.lower){recordBreak(sym,con.ticks);updatePatternUI(sym);onKO(p);prevP=p;addTickRow(p,chg,t);return;}
     if(tp&&con.pnl>=tp)sniperExit(p,0,'Take Profit');
   }
 
-  addTickRow(p,chg,t);
-  prevP=p;
-  $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
-  if(aiOn&&tickBuf.length>=15)runAI(p);
-  updatePatternUI(sym);
+  if(!isHistory){
+    addTickRow(p,chg,t);
+    prevP=p;
+    $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
+    if(aiOn&&tickBuf.length>=5)runAI(p);
+    updatePatternUI(sym);
+  } else {
+    prevP=p; // Still update prevP for historical chain
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -1717,14 +1771,16 @@ function doVolScanAndSwitch(silent){
 
     renderVolSide(results);
 
-    // Auto-switch to best symbol
-    if(!con&&results.length>0){
-      const best=results[0];
-      if(now()-lastVolSwitch>12000){
-        lastVolSwitch=now();
-        if(best.sym!==sym){
-          switchSym(best.sym,best.dp);
-          toast('🔭 AI→'+best.name+' (score:'+best.score+')','p');
+    // AUTO-MARKET CONTROL: Aggressively switch to the safest market
+    if(!con && results.length > 0){
+      const best = results[0];
+      const currentScore = volScores[sym] ? volScores[sym].score : 0;
+      // Switch if another market is significantly safer (>15 points better) or current is weak (<60)
+      if(now() - lastVolSwitch > 5000 && (best.score > currentScore + 15 || currentScore < 60)){
+        lastVolSwitch = now();
+        if(best.sym !== sym){
+          switchSym(best.sym, best.dp);
+          toast('🚀 AI SWAP → ' + best.name + ' (' + best.score + '%)', 'p');
         }
       }
     }
@@ -1754,6 +1810,8 @@ function switchSym(newSym,newDp){
   updatePatternUI(sym);
   if(ws&&ws.readyState===1){
     ws.send(JSON.stringify({forget_all:'ticks'}));
+    // Request 100 historical ticks immediately
+    send({ticks_history:sym,count:100,end:'latest',style:'ticks'});
     setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},400);
   }
 }
@@ -1763,7 +1821,8 @@ function switchSym(newSym,newDp){
 // ═══════════════════════════════════════════
 function runAI(price){
   const buf=tickBuf,n=buf.length;
-  if(n<15)return;
+  // SCALPING START: Need 5 ticks for micro-trend analysis
+  if(n<5)return;
   const sh=Math.min(8,n),lg=Math.min(50,n);
   const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
   const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
@@ -1785,12 +1844,23 @@ function runAI(price){
   const er=con?exitProbability:0;
 
   let entryScore=0;
-  if(trendUp)entryScore+=25;if(momUp)entryScore+=20;if(!rsiOB)entryScore+=20;if(lowVol)entryScore+=20;if(rsiOS)entryScore+=15;
+  // PREDICTIVE SCALPING ENTRY: Analyze micro-trend for safe "Right Moment" entry
+  const last3 = buf.slice(-3);
+  const microTrendUp = last3[2].p > last3[1].p && last3[1].p > last3[0].p;
+  const microTrendDn = last3[2].p < last3[1].p && last3[1].p < last3[0].p;
+  
+  // Entry Score based on stability and micro-trend
+  const symScore = volScores[sym] ? volScores[sym].score : 50;
+  entryScore = symScore * 0.6 + (microTrendUp || microTrendDn ? 40 : 0);
 
   let sig='WAIT',reason='Analyzing…';
   if(con&&con.byAI){sig='IN TRADE';reason='Hold:'+hs+'% Break:'+er+'%';}
-  else if(!con&&!aiCool&&entryScore>=35&&n>=15&&!rsiOB){sig='BUY';reason='Score:'+entryScore+'/100';}
-  else{sig='WAIT';reason='Score:'+entryScore+'/100';}
+  // SMART ENTRY: Fire only when market is stable (Score > 70) or micro-trend is clear
+  else if(!con && !isBuying && (entryScore > 70 || (symScore > 60 && (microTrendUp || microTrendDn)))){
+    sig='BUY';
+    reason='SCALP:'+entryScore.toFixed(0)+'%';
+  }
+  else{sig='WAIT';reason='Wait for Stability...';}
 
   const tl=trendUp?'▲ BULL':'▼ BEAR';
   $('iTrend').textContent=tl;$('iTrend').style.color=trendUp?'var(--green)':'var(--red)';
@@ -1825,13 +1895,13 @@ function runAI(price){
 // ENTRY & EXIT
 // ═══════════════════════════════════════════
 function doEntry(price,score){
-  if(con||aiCool||exitingNow||isBuying)return;
-  aiCool=true;ticksHeld=0;
+  if(con||exitingNow||isBuying)return;
+  // REMOVED COOLDOWN: No more aiCool delay
+  ticksHeld=0;
   phase='FIRE';updatePhaseUI();
-  showFlash('flashBuy','AI ENTRY @ '+price.toFixed(dp)+' ['+score+']',2000);
-  toast('🎯 AI entering @ '+price.toFixed(dp),'p');
+  showFlash('flashBuy','AI ENTRY @ '+price.toFixed(dp),1000);
+  toast('🎯 AI FORCE ENTRY @ '+price.toFixed(dp),'p');
   buyContract(true);phase='IN_TRADE';updatePhaseUI();
-  setTimeout(()=>{aiCool=false;},4000);
 }
 
 function sniperExit(price,bp,reason){
@@ -1856,7 +1926,7 @@ function buyContract(fromAI){
   if(isBuying){toast('Trade pending…','y');return;}
   
   // Always get fresh stake from input
-  const currentStake = parseFloat($('iStake').value) || stake;
+  const currentStake = parseFloat($('stkInput').value) || stake;
   const p=prevP,d=barrierDist(p);
   
   con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
@@ -1920,7 +1990,8 @@ function onKO(price){
   if(con.byAI){
     aiLoss++;aiTrades++;aiPnl=parseFloat((aiPnl-loss).toFixed(2));
     addHistItem({won:false,pnl:-loss,reason:'BARRIER '+dir+' @'+ticks+'t',ticks});
-    aiCool=true;setTimeout(()=>{aiCool=false;},8000);
+    // REMOVED KO COOLDOWN: Can re-enter immediately after a loss
+    aiCool=false;
   }
   if(isReal&&realId){
     send({sell:realId,price:0});
