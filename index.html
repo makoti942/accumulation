@@ -25,6 +25,7 @@ body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,san
 .login-logo{font-size:44px;margin-bottom:10px;}
 .login-title{font-size:20px;font-weight:800;margin-bottom:6px;background:linear-gradient(135deg,#00b0ff,#a855f7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
 .login-sub{font-size:12px;color:var(--sub);margin-bottom:20px;line-height:1.6;}
+.login-sub-msg{font-size:10px;color:var(--sub);margin-top:4px;font-style:italic;}
 .login-features{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;text-align:left;}
 .login-feat{background:#0a0d12;border:1px solid var(--border);border-radius:10px;padding:10px;display:flex;align-items:flex-start;gap:7px;}
 .login-feat-icon{font-size:18px;flex-shrink:0;}
@@ -1946,45 +1947,37 @@ function sniperExit(price,bp,reason){
 // BUY CONTRACT
 // ═══════════════════════════════════════════
 function buyContract(fromAI){
-  if(!wsAlive){toast('Not connected','r');return;}
-  if(con){toast('Already in trade','r');return;}
-  if(!prevP){toast('No price yet','y');return;}
-  if(isBuying){toast('Trade pending…','y');return;}
-  
-  const currentStake = parseFloat($('stkInput').value) || stake;
-  const p = prevP, d = barrierDist(p);
-  
-    con = {
-    entry: p,
-    upper: parseFloat((p+d).toFixed(dp+2)),
-    lower: parseFloat((p-d).toFixed(dp+2)),
-    ticks: 0,
-    stake: currentStake,
-    pnl: 0,
-    payout: currentStake,
-    start: now(),
-    byAI: !!fromAI,
-    realId: null,
-    isReal: authed && !!activeToken // If authed, it's a Deriv account (Real or Demo)
-  };
-  
-  ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
-  
-  if(!fromAI) {
-    if (con.isReal) {
+    if(!wsAlive){toast('Not connected','r');return;}
+    if(!authed || !activeToken){toast('Please login to Deriv first','y');showLogin();return;}
+    if(con){toast('Already in trade','r');return;}
+    if(!prevP){toast('No price yet','y');return;}
+    if(isBuying){toast('Trade pending…','y');return;}
+    
+    const currentStake = parseFloat($('stkInput').value) || stake;
+    const p = prevP, d = barrierDist(p);
+    
+      con = {
+      entry: p,
+      upper: parseFloat((p+d).toFixed(dp+2)),
+      lower: parseFloat((p-d).toFixed(dp+2)),
+      ticks: 0,
+      stake: currentStake,
+      pnl: 0,
+      payout: currentStake,
+      start: now(),
+      byAI: !!fromAI,
+      realId: null,
+      isReal: true
+    };
+    
+    ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
+    
+    if(!fromAI) {
       toast('🚀 Real Trade @ ' + p.toFixed(dp) + ' [DERIV]', 'g', 3000);
     } else {
-      toast('🧪 Local Sim @ ' + p.toFixed(dp) + ' [VIRTUAL]', 'y', 3000);
+      toast('🤖 AI Sniper: Real Entry @ ' + p.toFixed(dp) + ' [DERIV]', 'g', 2000);
     }
-  } else {
-    if (con.isReal) {
-      toast('🤖 AI Sniper: Real Entry @ ' + p.toFixed(dp), 'g', 2000);
-    } else {
-      toast('🤖 AI Sniper: Local Sim @ ' + p.toFixed(dp), 'y', 2000);
-    }
-  }
-  
-  if(con.isReal){
+    
     isBuying = true;
     console.log('Sending buy request to Deriv:', {
       buy: '1',
@@ -2005,94 +1998,77 @@ function buyContract(fromAI){
       }
     });
     setTimeout(() => { isBuying = false; }, 10000);
-  } else {
-    // LOCAL SIMULATION ONLY (No login)
-    realBalance = parseFloat((realBalance - currentStake).toFixed(2));
-    updateBalanceUI();
-    toast('💸 Local Stake: -' + currentStake.toFixed(2), 'y', 3000);
   }
-}
 
 // ═══════════════════════════════════════════
 // CLOSE CONTRACT — properly adds profit to balance
 // ═══════════════════════════════════════════
 function closeContract(reason,fromAI){
-  if(!con)return;
-  const stk = con.stake;
-  const tks = con.ticks;
-  const byAI = con.byAI, realId = con.realId, isReal = con.isReal;
+    if(!con)return;
+    const stk = con.stake;
+    const tks = con.ticks;
+    const byAI = con.byAI, realId = con.realId, isReal = con.isReal;
 
-  const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
-  
-  let finalProfit = won ? parseFloat((con.pnl || 0).toFixed(2)) : -stk;
-  let finalPayout = won ? parseFloat((con.payout || stk).toFixed(2)) : 0;
+    const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
+    
+    let finalProfit = won ? parseFloat((con.pnl || 0).toFixed(2)) : -stk;
+    let finalPayout = won ? parseFloat((con.payout || stk).toFixed(2)) : 0;
 
-  if(byAI || fromAI){
-    if(won) aiWins++; else aiLoss++;
-    aiTrades++;
-    aiPnl = parseFloat((aiPnl + finalProfit).toFixed(2));
-    addHistItem({won, pnl: finalProfit, reason, ticks: tks});
-    if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
-  }
-
-  if(isReal){
-    if(realId && !reason.startsWith('Deriv:')){
-      console.log('Closing Real Contract:', realId);
-      send({sell: realId, price: 0});
+    if(byAI || fromAI){
+      if(won) aiWins++; else aiLoss++;
+      aiTrades++;
+      aiPnl = parseFloat((aiPnl + finalProfit).toFixed(2));
+      addHistItem({won, pnl: finalProfit, reason, ticks: tks});
+      if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
     }
-    // DERIV ACCOUNT (Real or Demo): Wait for server settlement
-    setTimeout(() => send({balance: 1}), 1000);
-    setTimeout(() => send({balance: 1}), 3000);
-  } else {
-    // LOCAL SIMULATION ONLY
-    if(won){
-      realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
-      updateBalanceUI();
-      toast('💰 Local Payout: +' + finalPayout.toFixed(2), 'g', 3000);
-    }
-  }
 
-  isBuying = false; con = null; clearBarriers();
-  exitProbability = 0; updateExitMeter(0); $('exitMeter').classList.remove('on');
-  renderNoContract(); resetBarrierUI();
-  $('sTicks').textContent = '0'; $('sPnl').textContent = '$0.00'; $('sPnl').style.color = 'var(--text)'; $('sPayout').textContent = '$0.00';
-  toast((won ? '✅ WIN +$' + finalProfit.toFixed(2) : '❌ LOSS -$'+stk.toFixed(2)) + ' | ' + reason, won ? 'g' : 'r', 5000);
-}
+    if(isReal){
+      if(realId && !reason.startsWith('Deriv:')){
+        console.log('Closing Real Contract:', realId);
+        send({sell: realId, price: 0});
+      }
+      // DERIV ACCOUNT (Real or Demo): Wait for server settlement
+      setTimeout(() => send({balance: 1}), 1000);
+      setTimeout(() => send({balance: 1}), 3000);
+    }
+
+    isBuying = false; con = null; clearBarriers();
+    exitProbability = 0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+    renderNoContract(); resetBarrierUI();
+    $('sTicks').textContent = '0'; $('sPnl').textContent = '$0.00'; $('sPnl').style.color = 'var(--text)'; $('sPayout').textContent = '$0.00';
+    toast((won ? '✅ WIN +$' + finalProfit.toFixed(2) : '❌ LOSS -$'+stk.toFixed(2)) + ' | ' + reason, won ? 'g' : 'r', 5000);
+  }
 
 // ═══════════════════════════════════════════
 // KNOCK OUT — barrier physically hit
 // ═══════════════════════════════════════════
 function onKO(price){
-  if(!con)return;
-  const dir=price>=con.upper?'UPPER':'LOWER';
-  const loss=con.stake,isReal=con.isReal,ticks=con.ticks,realId=con.realId;
-  recordBreak(sym,ticks);updatePatternUI(sym);
-  showFlash('flashExit','KO! '+dir+' -$'+loss.toFixed(2),4000);
-  $('chartWrap').classList.add('danger');setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
-  if(con.byAI){
-    aiLoss++;aiTrades++;
-    const actualProfit = -loss;
-    aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
-    addHistItem({won:false,pnl:actualProfit,reason:'BARRIER '+dir+' @'+ticks+'t',ticks});
-    // REMOVED KO COOLDOWN: Can re-enter immediately after a loss
-    aiCool=false;
+    if(!con)return;
+    const dir=price>=con.upper?'UPPER':'LOWER';
+    const loss=con.stake,isReal=con.isReal,ticks=con.ticks,realId=con.realId;
+    recordBreak(sym,ticks);updatePatternUI(sym);
+    showFlash('flashExit','KO! '+dir+' -$'+loss.toFixed(2),4000);
+    $('chartWrap').classList.add('danger');setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
+    if(con.byAI){
+      aiLoss++;aiTrades++;
+      const actualProfit = -loss;
+      aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
+      addHistItem({won:false,pnl:actualProfit,reason:'BARRIER '+dir+' @'+ticks+'t',ticks});
+      // REMOVED KO COOLDOWN: Can re-enter immediately after a loss
+      aiCool=false;
+    }
+    if(isReal&&realId){
+      send({sell:realId,price:0});
+      // Balance poll is already handled via sell message or in closeContract logic if needed
+      toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
+    }
+    isBuying=false;con=null;clearBarriers();
+    exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
+    renderNoContract();resetBarrierUI();
+    $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+    // Force vol scan after KO
+    if(aiOn){lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(true),800);}
   }
-  if(isReal&&realId){
-    send({sell:realId,price:0});
-    // Balance poll is already handled via sell message or in closeContract logic if needed
-    toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
-  }else if(!isReal&&realBalance!==null){
-    // Sim: balance already had stake deducted at entry, nothing to add back on KO
-    updateBalanceUI();
-    toast('❌ KO '+dir+' -$'+loss.toFixed(2)+' → '+userCurrency+' '+realBalance.toFixed(2),'r',6000);
-  }
-  isBuying=false;con=null;clearBarriers();
-  exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
-  renderNoContract();resetBarrierUI();
-  $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-  // Force vol scan after KO
-  if(aiOn){lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(true),800);}
-}
 
 // ═══════════════════════════════════════════
 // CONTRACT UI
