@@ -1095,13 +1095,16 @@ function handle(d){
       updateBalanceUI();
       if(accountList.length>1)renderAcctMenu();
       // Flash and show toast for every meaningful balance change
-      if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
+      // Only flash balance for positive changes or significant negative changes not related to stake deduction
+      // The closeContract function already handles specific trade outcome toasts.
+      if(ob!==null&&ob!==undefined&&nb > ob && Math.abs(nb-ob)>0.001){
         flashBalance();
-        const diff=+(nb-ob).toFixed(2);
-        if(Math.abs(diff)>0.001){
-          toast((diff>0?'💰 Balance +':'💸 Balance ')+diff.toFixed(2)+' → '+userCurrency+' '+nb.toFixed(2),diff>0?'g':'y',5000);
-        }
       }
+      // Optionally, if a toast is still desired for *any* balance update from Deriv, it should be generic
+      // and not imply a deduction if it's just synchronizing after an optimistic local update.
+      // For now, we'll rely on closeContract for trade-specific toasts.
+      // toast("Balance updated: "+userCurrency+" "+nb.toFixed(2),"g",2000); // Less intrusive toast
+      // );
     }
     return;
   }
