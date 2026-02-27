@@ -1090,20 +1090,23 @@ function handle(d){
     return;
   }
   if(t==='balance'){
-    if(d.balance&&d.balance.balance!==undefined){
-      const nb=parseFloat(d.balance.balance);
-      const ob=realBalance;
-      realBalance=nb;
-      const acct=accountList.find(a=>a.loginid===activeLoginid);
-      if(acct)acct.balance=nb;
+    if(d.balance && d.balance.balance !== undefined){
+      const nb = parseFloat(d.balance.balance);
+      const ob = realBalance;
+      realBalance = nb;
+      const acct = accountList.find(a => a.loginid === activeLoginid);
+      if(acct) acct.balance = nb;
       updateBalanceUI();
-      if(accountList.length>1)renderAcctMenu();
-      // Flash and show toast for every meaningful balance change
-      if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
-        const diff=+(nb-ob).toFixed(2);
-        if(Math.abs(diff)>0.01){
+      if(accountList.length > 1) renderAcctMenu();
+      
+      // Visual feedback for balance changes (stake deduction or payout)
+      if(ob !== null && ob !== undefined && Math.abs(nb - ob) > 0.001){
+        const diff = parseFloat((nb - ob).toFixed(2));
+        if(Math.abs(diff) > 0.01){
           flashBalance();
-          toast((diff>0?"💰 Balance +":"💸 Balance ")+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),diff>0?"g":"y",4000);
+          const isGain = diff > 0;
+          const msg = (isGain ? "💰 Payout: +" : "💸 Stake: -") + Math.abs(diff).toFixed(2);
+          toast(msg + " | New Balance: " + userCurrency + " " + nb.toFixed(2), isGain ? "g" : "y", 4000);
         }
       }
     }
@@ -1947,27 +1950,48 @@ function buyContract(fromAI){
   if(!prevP){toast('No price yet','y');return;}
   if(isBuying){toast('Trade pending…','y');return;}
   
-  // Always get fresh stake from input
   const currentStake = parseFloat($('stkInput').value) || stake;
-  const p=prevP,d=barrierDist(p);
+  const p = prevP, d = barrierDist(p);
   
-  con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
+  con = {
+    entry: p,
+    upper: parseFloat((p+d).toFixed(dp+2)),
+    lower: parseFloat((p-d).toFixed(dp+2)),
+    ticks: 0,
+    stake: currentStake,
+    pnl: 0,
+    payout: currentStake,
+    start: now(),
+    byAI: !!fromAI,
+    realId: null,
+    isReal: authed && !!activeToken && !activeLoginid.startsWith('VRTC')
+  };
   
-  // Deduct stake immediately for simulation
-  // Local balance deduction removed. 
-  // Relying on Deriv server updates for both Real and Virtual accounts.
-
-  ticksHeld=0;drawBarriers();updateConUI();$('exitMeter').classList.add('on');
+  ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
   
-  if(!fromAI)toast('Contract @ '+p.toFixed(dp)+(con.isReal?' [REAL]':' [SIM]'),'g');
+  if(!fromAI) toast('Contract @ ' + p.toFixed(dp) + (con.isReal ? ' [REAL]' : ' [SIM]'), 'g');
   
   if(con.isReal){
-    isBuying=true;
-    // DO NOT manually deduct stake for real accounts here.
-    // Deriv's server will deduct it and send an official balance update.
-    send({buy:'1',price:currentStake,parameters:{contract_type:'ACCU',symbol:sym,amount:currentStake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
-    // Fail-safe for isBuying
-    setTimeout(()=>{isBuying=false;},10000);
+    isBuying = true;
+    send({
+      buy: '1',
+      price: currentStake,
+      parameters: {
+        contract_type: 'ACCU',
+        symbol: sym,
+        amount: currentStake,
+        basis: 'stake',
+        growth_rate: gr/100,
+        currency: userCurrency
+      }
+    });
+    setTimeout(() => { isBuying = false; }, 10000);
+  } else {
+    // For Simulation (Virtual/Demo), we MUST deduct stake locally
+    // because there is no server-side simulation for Accumulators.
+    realBalance = parseFloat((realBalance - currentStake).toFixed(2));
+    updateBalanceUI();
+    toast('💸 Stake Deducted: -' + currentStake.toFixed(2), 'y', 3000);
   }
 }
 
@@ -1976,41 +2000,43 @@ function buyContract(fromAI){
 // ═══════════════════════════════════════════
 function closeContract(reason,fromAI){
   if(!con)return;
-  const stk=con.stake;
-  const tks=con.ticks;
-  const byAI=con.byAI,realId=con.realId,isReal=con.isReal;
+  const stk = con.stake;
+  const tks = con.ticks;
+  const byAI = con.byAI, realId = con.realId, isReal = con.isReal;
 
-  // CRITICAL: A win is only if reason is NOT lost/KO
   const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
   
-  // Capture Final Profit/Payout strictly from Deriv's official contract data.
-  // For Accumulators, poc.profit is the exact net amount added to the balance.
   let finalProfit = won ? parseFloat((con.pnl || 0).toFixed(2)) : -stk;
   let finalPayout = won ? parseFloat((con.payout || stk).toFixed(2)) : 0;
 
-  if(byAI||fromAI){
-    if(won)aiWins++;else aiLoss++;
+  if(byAI || fromAI){
+    if(won) aiWins++; else aiLoss++;
     aiTrades++;
     aiPnl = parseFloat((aiPnl + finalProfit).toFixed(2));
     addHistItem({won, pnl: finalProfit, reason, ticks: tks});
     if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
   }
 
-  // Local balance addition removed.
-  // Relying on Deriv server updates for both Real and Virtual accounts.
-
-  if(isReal && realId && !reason.startsWith('Deriv:')){
-    // If we initiated the close (not Deriv), send the sell command.
-    send({sell: realId, price: 0});
+  if(isReal){
+    if(realId && !reason.startsWith('Deriv:')){
+      send({sell: realId, price: 0});
+    }
+    // For Real accounts, we wait for the server's balance update
+    setTimeout(() => send({balance: 1}), 1000);
+    setTimeout(() => send({balance: 1}), 3000);
+  } else {
+    // For Simulation, we MUST add the payout locally
+    if(won){
+      realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
+      updateBalanceUI();
+      toast('💰 Payout Added: +' + finalPayout.toFixed(2), 'g', 3000);
+    }
   }
-  // Force a balance refresh from Deriv's server for ALL account types (Real/Virtual)
-  setTimeout(() => send({balance: 1}), 1000);
-  setTimeout(() => send({balance: 1}), 3000);
 
-  isBuying=false;con=null;clearBarriers();
-  exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
-  renderNoContract();resetBarrierUI();
-  $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+  isBuying = false; con = null; clearBarriers();
+  exitProbability = 0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+  renderNoContract(); resetBarrierUI();
+  $('sTicks').textContent = '0'; $('sPnl').textContent = '$0.00'; $('sPnl').style.color = 'var(--text)'; $('sPayout').textContent = '$0.00';
   toast((won ? '✅ WIN +$' + finalProfit.toFixed(2) : '❌ LOSS -$'+stk.toFixed(2)) + ' | ' + reason, won ? 'g' : 'r', 5000);
 }
 
