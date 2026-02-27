@@ -1958,6 +1958,8 @@ function buyContract(fromAI){
   // Deduct stake immediately for simulation
   if(!con.isReal && realBalance !== null) {
     realBalance = parseFloat((realBalance - currentStake).toFixed(2));
+    const acct=accountList.find(a=>a.loginid===activeLoginid);
+    if(acct)acct.balance=realBalance;
     updateBalanceUI();
   }
 
@@ -1989,15 +1991,22 @@ function closeContract(reason,fromAI){
   let pnl = con.pnl;
   // If pnl is still 0 but we have ticks, recalculate from payout
   if(pnl === 0 && tks > 0 && payout > stk) pnl = parseFloat((payout - stk).toFixed(2));
-  const won = pnl > 0 || (pnl === 0 && reason !== 'Deriv:lost' && reason !== 'KO');
+  
+  // CRITICAL: A win is only if reason is NOT lost/KO AND pnl is non-negative
+  const won = reason !== 'Deriv:lost' && reason !== 'KO' && reason !== 'Deriv:lost' && !reason.includes('KO') && !reason.includes('lost');
+  
   // finalPayout = full amount returned to balance: stake + profit (on win), 0 (on loss/KO)
+  // If we won, we get back at least the stake.
   const finalPayout = won ? parseFloat((stk + Math.max(0, pnl)).toFixed(2)) : 0;
+  // Re-sync pnl to match what's actually being added (finalPayout - stk)
+  const actualProfit = won ? parseFloat((finalPayout - stk).toFixed(2)) : -stk;
 
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
-    aiTrades++;aiPnl=parseFloat((aiPnl+pnl).toFixed(2));
-    addHistItem({won,pnl,reason,ticks:tks});
-    if(won && pnl > 0)showFlash('flashWin','WIN +$'+pnl.toFixed(2)+' ('+tks+'t)',2500);
+    aiTrades++;
+    aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
+    addHistItem({won,pnl:actualProfit,reason,ticks:tks});
+    if(won && actualProfit > 0)showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
   }
 
   if(isReal && realId){
@@ -2023,7 +2032,7 @@ function closeContract(reason,fromAI){
   exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
   renderNoContract();resetBarrierUI();
   $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-  toast((won?'✅ WIN +$'+pnl.toFixed(2)+' (payout $'+finalPayout.toFixed(2)+')':'❌ LOSS -$'+stk.toFixed(2))+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'r',5000);
+  toast((won?'✅ WIN +$'+actualProfit.toFixed(2)+' (payout $'+finalPayout.toFixed(2)+')':'❌ LOSS -$'+stk.toFixed(2))+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'r',5000);
 }
 
 // ═══════════════════════════════════════════
@@ -2037,8 +2046,10 @@ function onKO(price){
   showFlash('flashExit','KO! '+dir+' -$'+loss.toFixed(2),4000);
   $('chartWrap').classList.add('danger');setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
   if(con.byAI){
-    aiLoss++;aiTrades++;aiPnl=parseFloat((aiPnl-loss).toFixed(2));
-    addHistItem({won:false,pnl:-loss,reason:'BARRIER '+dir+' @'+ticks+'t',ticks});
+    aiLoss++;aiTrades++;
+    const actualProfit = -loss;
+    aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
+    addHistItem({won:false,pnl:actualProfit,reason:'BARRIER '+dir+' @'+ticks+'t',ticks});
     // REMOVED KO COOLDOWN: Can re-enter immediately after a loss
     aiCool=false;
   }
