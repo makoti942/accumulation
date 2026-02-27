@@ -1953,7 +1953,7 @@ function buyContract(fromAI){
   const currentStake = parseFloat($('stkInput').value) || stake;
   const p = prevP, d = barrierDist(p);
   
-  con = {
+    con = {
     entry: p,
     upper: parseFloat((p+d).toFixed(dp+2)),
     lower: parseFloat((p-d).toFixed(dp+2)),
@@ -1964,12 +1964,12 @@ function buyContract(fromAI){
     start: now(),
     byAI: !!fromAI,
     realId: null,
-    isReal: authed && !!activeToken && !activeLoginid.startsWith('VRTC')
+    isReal: authed && !!activeToken // If authed, it's a Deriv account (Real or Demo)
   };
   
   ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
   
-  if(!fromAI) toast('Contract @ ' + p.toFixed(dp) + (con.isReal ? ' [REAL]' : ' [SIM]'), 'g');
+  if(!fromAI) toast('Contract @ ' + p.toFixed(dp) + (con.isReal ? ' [DERIV]' : ' [LOCAL]'), 'g');
   
   if(con.isReal){
     isBuying = true;
@@ -1987,11 +1987,10 @@ function buyContract(fromAI){
     });
     setTimeout(() => { isBuying = false; }, 10000);
   } else {
-    // For Simulation (Virtual/Demo), we MUST deduct stake locally
-    // because there is no server-side simulation for Accumulators.
+    // LOCAL SIMULATION ONLY (No login)
     realBalance = parseFloat((realBalance - currentStake).toFixed(2));
     updateBalanceUI();
-    toast('💸 Stake Deducted: -' + currentStake.toFixed(2), 'y', 3000);
+    toast('💸 Local Stake: -' + currentStake.toFixed(2), 'y', 3000);
   }
 }
 
@@ -2021,15 +2020,15 @@ function closeContract(reason,fromAI){
     if(realId && !reason.startsWith('Deriv:')){
       send({sell: realId, price: 0});
     }
-    // For Real accounts, we wait for the server's balance update
+    // DERIV ACCOUNT (Real or Demo): Wait for server settlement
     setTimeout(() => send({balance: 1}), 1000);
     setTimeout(() => send({balance: 1}), 3000);
   } else {
-    // For Simulation, we MUST add the payout locally
+    // LOCAL SIMULATION ONLY
     if(won){
       realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
       updateBalanceUI();
-      toast('💰 Payout Added: +' + finalPayout.toFixed(2), 'g', 3000);
+      toast('💰 Local Payout: +' + finalPayout.toFixed(2), 'g', 3000);
     }
   }
 
