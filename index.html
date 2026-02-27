@@ -1101,14 +1101,9 @@ function handle(d){
       // Flash and show toast for every meaningful balance change
       if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
         const diff=+(nb-ob).toFixed(2);
-        // During a trade, Deriv might send updates that reflect the deducted stake.
-        // We only want to notify the user of meaningful gains (wins) or actual losses.
-        if(diff > 0.01) {
+        if(Math.abs(diff)>0.01){
           flashBalance();
-          toast("💰 Balance +"+diff.toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),"g",5000);
-        } else if (diff < -0.5 && !con) {
-          // Only notify of losses if we aren't currently in a trade (to avoid stake-deduction confusion)
-          toast("💸 Balance -"+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),"y",5000);
+          toast((diff>0?"💰 Balance +":"💸 Balance ")+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),diff>0?"g":"y",4000);
         }
       }
     }
@@ -1972,16 +1967,8 @@ function buyContract(fromAI){
   con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
   
   // Deduct stake immediately for simulation
-  // For simulation accounts, we still deduct locally
-  if(!con.isReal) {
-    // Initialize sim balance if it's null
-    if(realBalance === null) realBalance = 10000;
-    
-    realBalance = parseFloat((realBalance - currentStake).toFixed(2));
-    const acct=accountList.find(a=>a.loginid===activeLoginid);
-    if(acct) acct.balance=realBalance;
-    updateBalanceUI();
-  }
+  // Local balance deduction removed. 
+  // Relying on Deriv server updates for both Real and Virtual accounts.
 
   ticksHeld=0;drawBarriers();updateConUI();$('exitMeter').classList.add('on');
   
@@ -2034,26 +2021,16 @@ function closeContract(reason,fromAI){
     if(won) showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
   }
 
-  // Update local balance immediately for BOTH Real and Sim to prevent visual delay.
-  // For Real accounts, we later sync with Deriv's official balance.
-  if(realBalance !== null){
-    if(won && finalPayout > 0){
-      // The stake was deducted at entry. We now add the FULL payout (stake + profit).
-      realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
-      const acct=accountList.find(a=>a.loginid===activeLoginid);
-      if(acct) acct.balance=realBalance;
-      updateBalanceUI();
-      flashBalance();
-    }
-  }
+  // Local balance addition removed.
+  // Relying on Deriv server updates for both Real and Virtual accounts.
 
   if(isReal && realId){
     // Explicitly sell the contract on Deriv
     send({sell:realId,price:0});
-    // Fail-safe: Force a balance refresh from Deriv's server after 1.5s and 3s
-    setTimeout(()=>send({balance:1}), 1500);
-    setTimeout(()=>send({balance:1}), 3500);
   }
+  // Force a balance refresh from Deriv's server for ALL account types (Real/Virtual)
+  setTimeout(()=>send({balance:1}), 500);
+  setTimeout(()=>send({balance:1}), 2000);
 
   isBuying=false;con=null;clearBarriers();
   exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
