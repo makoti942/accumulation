@@ -501,7 +501,8 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   <div class="login-card">
     <div class="login-logo">🎯</div>
     <div class="login-title">Deriv Accumulator AI Sniper</div>
-    <div class="login-sub">Connect your Deriv account. AI Sniper analyzes every tick and exits before barriers break.</div>
+    <div class="login-sub">Connect your Deriv account (Real or Demo). AI Sniper analyzes every tick and executes real trades on your Deriv account.</div>
+    <div class="login-sub-msg" style="color:var(--gold);font-size:10px;margin-bottom:8px;">⚡ All trades execute on your actual Deriv account</div>
     <div class="login-features">
       <div class="login-feat"><div class="login-feat-icon">🤖</div><div class="login-feat-text"><div class="t">AI Sniper Engine</div><div class="s">100-tick pattern analysis</div></div></div>
       <div class="login-feat"><div class="login-feat-icon">🎤</div><div class="login-feat-text"><div class="t">Voice AI — ARIA</div><div class="s">English & Kiswahili</div></div></div>
@@ -510,14 +511,14 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
     </div>
     <a class="btn-login" id="loginBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top">
       <svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="48" fill="#CC2936"/><path d="M28 72 L50 28 L72 72 Z" fill="white"/></svg>
-      Login with Deriv Account
+      Login with Deriv Real Account
     </a>
     <div class="login-divider"><span>OR</span></div>
-    <button class="btn-login" id="demoBtn" type="button" style="background:linear-gradient(135deg,#1e2736,#2a3444);font-size:13px;">
-      👁 Demo Mode (Watch Only)
-    </button>
+    <a class="btn-login" id="demoBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top" style="background:linear-gradient(135deg,#1e3a5f,#1a2a4a);font-size:13px;text-decoration:none;">
+      🎮 Login with Deriv Demo Account
+    </a>
     <div class="login-note">
-      By connecting you agree to Deriv's <a href="https://deriv.com/terms-and-conditions" target="_blank">Terms</a>. App ID 129093
+      Both Real and Demo accounts are supported. By connecting you agree to Deriv's <a href="https://deriv.com/terms-and-conditions" target="_blank">Terms</a>. App ID 129093
     </div>
   </div>
 </div>
@@ -871,7 +872,7 @@ let reconnDelay=800,reconnTimer=null,connTO=null,appReady=false;
 let heartbeatTimer=null,lastMsgTime=0;
 let sym='R_10',dp=3,gr=2,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
-let isBuying=false;
+let isBuying=false,pendingProposal=null,proposalReqId=null;
 let tokenStore={},accountList=[],activeLoginid='';
 let priceHist=[],tickBuf=[],prevP=null;
 let hi=-Infinity,lo=Infinity,symBufs={};
@@ -983,16 +984,7 @@ function getStoredToken(loginid){
 function showLogin(){$('loginOverlay').style.display='flex';}
 function hideLogin(){$('loginOverlay').style.display='none';bootApp();}
 
-$('demoBtn').addEventListener('click',()=>{
-  activeToken='';activeLoginid='VRTC000001';
-  realBalance=10000;userCurrency='USD';
-  accountList=[{loginid:activeLoginid,currency:userCurrency,is_virtual:true,balance:realBalance}];
-  $('loginOverlay').style.display='none';
-  bootApp();
-  showUserCard();
-  updateBalanceUI();
-  toast('👁 Demo Mode — $10,000 Virtual Balance','',5000);
-});
+// demoBtn is now an OAuth link — no click handler needed (handled by href redirect)
 
 // ═══════════════════════════════════════════
 // BOOT
@@ -1083,12 +1075,16 @@ function handle(d){
     $('sbAuth').textContent=(a.is_virtual?'Demo':'Live')+':'+a.loginid;
     $('sbAuth').style.color=a.is_virtual?'var(--gold)':'var(--green)';
     $('hPnlBadge').style.display='flex';
-    // Subscribe to balance — single subscription, never re-subscribe
+    // Subscribe to balance updates from Deriv
     send({balance:1,subscribe:1});
+    // Check for any open ACCU contracts
     send({portfolio:1,contract_type:['ACCU']});
     // Re-subscribe all ticks
     ALL_SYMS.forEach(s=>send({ticks:s.sym,subscribe:1}));
-    toast('✅ '+(a.is_virtual?'Demo':'Live')+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',4000);
+    // Request fresh balance immediately
+    setTimeout(()=>send({balance:1}),500);
+    const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
+    toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
     return;
   }
   if(t==='balance'){
@@ -1161,8 +1157,32 @@ function handle(d){
     if(open.length>0){toast('Found '+open.length+' open ACCU — clearing…','y',5000);open.forEach(c=>send({sell:c.contract_id,price:0}));con=null;clearBarriers();renderNoContract();isBuying=false;aiCool=false;}
     return;
   }
+  if(t==='proposal'){
+    // Server returned a proposal — now execute the buy using the proposal id
+    if(d.error){
+      isBuying=false;pendingProposal=null;proposalReqId=null;
+      const em=d.error.message||d.error.code||'Unknown error';
+      toast('Proposal error: '+em,'r',5000);
+      if(con){con=null;clearBarriers();renderNoContract();}
+      return;
+    }
+    const prop=d.proposal;
+    if(!prop||!isBuying)return;
+    // Store server-side barriers and details from proposal
+    pendingProposal=prop;
+    // Update local con with REAL server barriers
+    if(con){
+      if(prop.barrier)con.upper=parseFloat(prop.barrier);
+      if(prop.low_barrier)con.lower=parseFloat(prop.low_barrier);
+      if(prop.spot)con.entry=parseFloat(prop.spot);
+      drawBarriers();updateConUI();
+    }
+    // Execute the actual buy using the proposal id
+    send({buy:prop.id,price:prop.ask_price});
+    return;
+  }
   if(t==='buy'){
-    isBuying=false;
+    isBuying=false;pendingProposal=null;proposalReqId=null;
     if(d.error){
       const ec=d.error.code||'',em=d.error.message||'';
       if(ec==='TooManyOpenPositions'||em.toLowerCase().includes('too many')){
@@ -1174,8 +1194,10 @@ function handle(d){
     const bd=d.buy;
     if(bd&&con){
       con.realId=bd.contract_id;
+      // Use server-confirmed barriers from buy response (most authoritative)
       if(bd.barrier)con.upper=parseFloat(bd.barrier);
       if(bd.low_barrier)con.lower=parseFloat(bd.low_barrier);
+      if(bd.start_time)con.start=bd.start_time;
       send({proposal_open_contract:1,contract_id:con.realId,subscribe:1});
       drawBarriers();toast('✅ Contract open · ID:'+bd.contract_id,'g',3000);
     }
@@ -1209,10 +1231,15 @@ function handle(d){
           if(con.byAI){aiLoss++;aiTrades++;aiPnl-=con.stake;addHistItem({won:false,pnl:-con.stake,reason:'KO',ticks:con.ticks});}
           con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
         }
+        // Refresh balance after error-sell
+        setTimeout(()=>send({balance:1}),1000);
       }else toast('Sell error: '+(d.error.message||''),'y',4000);
       return;
     }
-    toast('Selling... awaiting settlement','g',2000);
+    toast('Sold — awaiting Deriv settlement…','g',2000);
+    // Refresh balance after successful sell
+    setTimeout(()=>send({balance:1}),1500);
+    setTimeout(()=>send({balance:1}),4000);
     return;
   }
 }
@@ -1944,22 +1971,27 @@ function sniperExit(price,bp,reason){
 }
 
 // ═══════════════════════════════════════════
-// BUY CONTRACT
+// BUY CONTRACT — Proper Deriv API flow: proposal → buy
 // ═══════════════════════════════════════════
 function buyContract(fromAI){
     if(!wsAlive){toast('Not connected','r');return;}
-    if(!authed || !activeToken){toast('Please login to Deriv first','y');showLogin();return;}
+    if(!authed || !activeToken){toast('⚠️ Please login to your Deriv account first','y',5000);showLogin();return;}
     if(con){toast('Already in trade','r');return;}
-    if(!prevP){toast('No price yet','y');return;}
+    if(!prevP){toast('No price yet — wait for tick data','y');return;}
     if(isBuying){toast('Trade pending…','y');return;}
-    
+
     const currentStake = parseFloat($('stkInput').value) || stake;
-    const p = prevP, d = barrierDist(p);
-    
-      con = {
+    const p = prevP;
+    const d = barrierDist(p);
+    const isVirtual = accountList.find(a=>a.loginid===activeLoginid);
+    const acctType = (isVirtual && isVirtual.is_virtual) ? 'DEMO' : 'REAL';
+
+    // Create a provisional contract object with estimated barriers.
+    // Barriers will be OVERWRITTEN with real server values once proposal/buy response arrives.
+    con = {
       entry: p,
-      upper: parseFloat((p+d).toFixed(dp+2)),
-      lower: parseFloat((p-d).toFixed(dp+2)),
+      upper: parseFloat((p + d).toFixed(dp + 2)),
+      lower: parseFloat((p - d).toFixed(dp + 2)),
       ticks: 0,
       stake: currentStake,
       pnl: 0,
@@ -1967,37 +1999,35 @@ function buyContract(fromAI){
       start: now(),
       byAI: !!fromAI,
       realId: null,
-      isReal: true
+      isReal: true  // Always true — we only trade via Deriv account (real or demo)
     };
-    
+
     ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
-    
-    if(!fromAI) {
-      toast('🚀 Real Trade @ ' + p.toFixed(dp) + ' [DERIV]', 'g', 3000);
-    } else {
-      toast('🤖 AI Sniper: Real Entry @ ' + p.toFixed(dp) + ' [DERIV]', 'g', 2000);
-    }
-    
     isBuying = true;
-    console.log('Sending buy request to Deriv:', {
-      buy: '1',
-      price: currentStake,
+
+    const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
+    toast(label + ' [' + acctType + '] Requesting proposal…', 'p', 2000);
+    console.log('[Deriv] Sending proposal request:', {symbol: sym, amount: currentStake, growth_rate: gr/100, currency: userCurrency});
+
+    // STEP 1: Request a proposal from Deriv to get real barriers and price
+    send({
+      proposal: 1,
+      contract_type: 'ACCU',
       symbol: sym,
+      amount: currentStake,
+      basis: 'stake',
+      growth_rate: gr / 100,
       currency: userCurrency
     });
-    send({
-      buy: '1',
-      price: currentStake,
-      parameters: {
-        contract_type: 'ACCU',
-        symbol: sym,
-        amount: currentStake,
-        basis: 'stake',
-        growth_rate: gr/100,
-        currency: userCurrency
+
+    // Safety timeout: cancel if no proposal response within 12 seconds
+    setTimeout(() => {
+      if(isBuying && !con.realId){
+        isBuying = false; pendingProposal = null;
+        con = null; clearBarriers(); renderNoContract();
+        toast('Proposal timed out — please retry', 'r', 5000);
       }
-    });
-    setTimeout(() => { isBuying = false; }, 10000);
+    }, 12000);
   }
 
 // ═══════════════════════════════════════════
@@ -2022,15 +2052,14 @@ function closeContract(reason,fromAI){
       if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
     }
 
-    if(isReal){
-      if(realId && !reason.startsWith('Deriv:')){
-        console.log('Closing Real Contract:', realId);
-        send({sell: realId, price: 0});
-      }
-      // DERIV ACCOUNT (Real or Demo): Wait for server settlement
-      setTimeout(() => send({balance: 1}), 1000);
-      setTimeout(() => send({balance: 1}), 3000);
+    // Always send sell to Deriv if we have a real contract ID (real or demo account)
+    if(realId && !reason.startsWith('Deriv:')){
+      console.log('[Deriv] Selling contract:', realId, '| Reason:', reason);
+      send({sell: realId, price: 0});
     }
+    // Request balance refresh after settlement
+    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 1500);
+    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 4000);
 
     isBuying = false; con = null; clearBarriers();
     exitProbability = 0; updateExitMeter(0); $('exitMeter').classList.remove('on');
@@ -2057,11 +2086,13 @@ function onKO(price){
       // REMOVED KO COOLDOWN: Can re-enter immediately after a loss
       aiCool=false;
     }
-    if(isReal&&realId){
+    // Always sell to Deriv on KO (real or demo account)
+    if(realId){
+      console.log('[Deriv] KO sell contract:', realId);
       send({sell:realId,price:0});
-      // Balance poll is already handled via sell message or in closeContract logic if needed
-      toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
     }
+    toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
+    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 1500);
     isBuying=false;con=null;clearBarriers();
     exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
     renderNoContract();resetBarrierUI();
@@ -2092,9 +2123,10 @@ function updateConUI(){
   $('sPnl').textContent = (displayPnl >= 0 ? '+$' : '-$') + Math.abs(displayPnl).toFixed(2);
   $('sPnl').style.color = pnlColor;
   $('sPayout').textContent = '$' + displayPayout.toFixed(2);
+  const acctLabel=(()=>{const a=accountList.find(x=>x.loginid===activeLoginid);return a?(a.is_virtual?'DEMO':'REAL'):'REAL';})();
   $('conPanel').innerHTML=
     '<div class="contract-box">'
-    +'<div class="con-hdr"><h4>'+(con.byAI?'🤖 AI ':'')+'ACTIVE'+(con.isReal?' [REAL]':' [SIM]')+'</h4><span class="pulse"></span></div>'
+    +'<div class="con-hdr"><h4>'+(con.byAI?'🤖 AI ':'')+'ACTIVE ['+acctLabel+']</h4><span class="pulse"></span></div>'
     +'<div class="con-body">'
     +'<div class="con-row"><span>Entry</span><span style="color:var(--blue);">'+con.entry.toFixed(dp)+'</span></div>'
     +'<div class="con-row"><span>Upper</span><span style="color:var(--green);">'+con.upper.toFixed(dp)+'</span></div>'
@@ -2356,11 +2388,17 @@ function toggleVP(){
 function setupEvents(){
   $('aiToggle').addEventListener('change',function(){
     aiOn=this.checked;
+    if(aiOn && (!authed || !activeToken)){
+      this.checked=false;aiOn=false;
+      toast('⚠️ Login to your Deriv account to enable AI trading','y',5000);
+      showLogin();return;
+    }
     $('aiBody').classList.toggle('on',aiOn);
     $('aiOv').classList.toggle('on',aiOn);
     if(aiOn){
       phase='HUNTING';aiCool=false;exitingNow=false;updatePhaseUI();
-      $('sbAI').style.color='var(--purple)';toast('🤖 AI Sniper ACTIVE — Pure Analysis Mode','p');
+      const acctLbl=(()=>{const a=accountList.find(x=>x.loginid===activeLoginid);return a?(a.is_virtual?'Demo':'Real'):'Real';})();
+      $('sbAI').style.color='var(--purple)';toast('🤖 AI Sniper ACTIVE on '+acctLbl+' Account','p');
       lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(false),1500);
     }else{
       phase='IDLE';updatePhaseUI();
@@ -2385,7 +2423,11 @@ function setupEvents(){
   $('tpToggle').addEventListener('change',function(){const on=this.checked;$('tpInput').disabled=!on;$('tpInput').style.opacity=on?'1':'.4';tp=on?parseFloat($('tpInput').value):null;});
   $('tpInput').addEventListener('input',()=>{tp=$('tpToggle').checked?parseFloat($('tpInput').value):null;});
 
-  $('buyBtn').addEventListener('click',()=>{if(con){toast('Sell first','r');return;}buyContract(false);});
+  $('buyBtn').addEventListener('click',()=>{
+    if(!authed||!activeToken){toast('⚠️ Login to your Deriv account first','y',4000);showLogin();return;}
+    if(con){toast('Sell first','r');return;}
+    buyContract(false);
+  });
   $('scanVolBtn').addEventListener('click',()=>doVolScanAndSwitch(false));
   $('scanClose').addEventListener('click',()=>$('scanOverlay').classList.remove('open'));
   $('scanOverlay').addEventListener('click',e=>{if(e.target===$('scanOverlay'))$('scanOverlay').classList.remove('open');});
