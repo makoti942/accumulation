@@ -1194,7 +1194,7 @@ function handle(d){
       $('sPnl').style.color=pnlColor;
       $('sPayout').textContent='$'+(con.payout||con.stake).toFixed(2);
     }
-    if(poc.status==='lost'||poc.status==='sold'||(poc.exit_tick&&poc.exit_tick.epoch)){
+    if(poc.status==='lost'||poc.status==='sold'){
       closeContract('Deriv:'+poc.status,con.byAI);
     }
     return;
@@ -1211,9 +1211,7 @@ function handle(d){
       }else toast('Sell error: '+(d.error.message||''),'y',4000);
       return;
     }
-    // The balance was already updated optimistically in closeContract().
-    // Poll once more to confirm Deriv's real balance (handles any edge cases).
-    setTimeout(()=>send({balance:1}),800);
+    toast('Selling... awaiting settlement','g',2000);
     return;
   }
 }
@@ -2024,13 +2022,13 @@ function closeContract(reason,fromAI){
   // Local balance addition removed.
   // Relying on Deriv server updates for both Real and Virtual accounts.
 
-  if(isReal && realId){
-    // Explicitly sell the contract on Deriv
-    send({sell:realId,price:0});
+  if(isReal && realId && !reason.startsWith('Deriv:')){
+    // If we initiated the close (not Deriv), send the sell command.
+    send({sell: realId, price: 0});
   }
   // Force a balance refresh from Deriv's server for ALL account types (Real/Virtual)
-  setTimeout(()=>send({balance:1}), 500);
-  setTimeout(()=>send({balance:1}), 2000);
+  setTimeout(() => send({balance: 1}), 1000);
+  setTimeout(() => send({balance: 1}), 3000);
 
   isBuying=false;con=null;clearBarriers();
   exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
