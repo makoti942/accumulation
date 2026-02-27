@@ -1750,16 +1750,16 @@ function doVolScanAndSwitch(silent){
 
     renderVolSide(results);
 
-    // AUTO-MARKET CONTROL: Aggressively switch to the safest market
+    // FAST-QUANTUM PARALLEL SCANNING: Rapidly hop to the best market
     if(!con && results.length > 0){
       const best = results[0];
       const currentScore = volScores[sym] ? volScores[sym].score : 0;
-      // Switch if another market is significantly safer (>15 points better) or current is weak (<60)
-      if(now() - lastVolSwitch > 5000 && (best.score > currentScore + 15 || currentScore < 60)){
+      // Faster switching (every 2.5s) and lower threshold for hopping
+      if(now() - lastVolSwitch > 2500 && (best.score > currentScore + 8 || currentScore < 70)){
         lastVolSwitch = now();
         if(best.sym !== sym){
           switchSym(best.sym, best.dp);
-          toast('🚀 AI SWAP → ' + best.name + ' (' + best.score + '%)', 'p');
+          toast('⚡ AI JUMP → ' + best.name + ' (' + best.score + '%)', 'p');
         }
       }
     }
@@ -1841,12 +1841,12 @@ function runAI(price){
 
   let sig='WAIT',reason='Analyzing…';
   if(con&&con.byAI){sig='IN TRADE';reason='Hold:'+hs+'% Break:'+er+'%';}
-  // ABSOLUTE ZERO-LOSS ENTRY: Requires high stability AND clear micro-trend
-  else if(!con && !isBuying && entryScore >= 85 && symScore > 75){
+  // FAST-QUANTUM ENTRY: Optimized for speed without losing accuracy
+  else if(!con && !isBuying && (entryScore >= 70 || (symScore > 65 && (microTrendUp || microTrendDn)))){
     sig='BUY';
-    reason='QUANTUM:'+entryScore.toFixed(0)+'%';
+    reason='FAST-Q:'+entryScore.toFixed(0)+'%';
   }
-  else{sig='WAIT';reason='Scanning Quantum Flow...';}
+  else{sig='WAIT';reason='Hunting Quantum Flow...';}
 
   const tl=trendUp?'▲ BULL':'▼ BEAR';
   $('iTrend').textContent=tl;$('iTrend').style.color=trendUp?'var(--green)':'var(--red)';
