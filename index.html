@@ -983,10 +983,14 @@ function showLogin(){$('loginOverlay').style.display='flex';}
 function hideLogin(){$('loginOverlay').style.display='none';bootApp();}
 
 $('demoBtn').addEventListener('click',()=>{
-  activeToken='';activeLoginid='';
+  activeToken='';activeLoginid='VRTC000001';
+  realBalance=10000;userCurrency='USD';
+  accountList=[{loginid:activeLoginid,currency:userCurrency,is_virtual:true,balance:realBalance}];
   $('loginOverlay').style.display='none';
   bootApp();
-  toast('👁 Demo Mode — no real trades','',5000);
+  showUserCard();
+  updateBalanceUI();
+  toast('👁 Demo Mode — $10,000 Virtual Balance','',5000);
 });
 
 // ═══════════════════════════════════════════
@@ -1965,10 +1969,13 @@ function buyContract(fromAI){
   
   // Deduct stake immediately for simulation
   // For simulation accounts, we still deduct locally
-  if(!con.isReal && realBalance !== null) {
+  if(!con.isReal) {
+    // Initialize sim balance if it's null
+    if(realBalance === null) realBalance = 10000;
+    
     realBalance = parseFloat((realBalance - currentStake).toFixed(2));
     const acct=accountList.find(a=>a.loginid===activeLoginid);
-    if(acct)acct.balance=realBalance;
+    if(acct) acct.balance=realBalance;
     updateBalanceUI();
   }
 
@@ -2025,10 +2032,13 @@ function closeContract(reason,fromAI){
   // For REAL accounts, we wait for Deriv's official balance update to ensure 100% accuracy.
   if(realBalance !== null && !isReal){
     if(won && finalPayout > 0){
+      // Ensure we add the FULL finalPayout (stake + profit)
       realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
     }
+    // Update the account list as well
     const acct=accountList.find(a=>a.loginid===activeLoginid);
-    if(acct)acct.balance=realBalance;
+    if(acct) acct.balance=realBalance;
+    
     updateBalanceUI();
     if(won) flashBalance();
   }
