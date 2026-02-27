@@ -1095,16 +1095,14 @@ function handle(d){
       updateBalanceUI();
       if(accountList.length>1)renderAcctMenu();
       // Flash and show toast for every meaningful balance change
-      // Only flash balance for positive changes or significant negative changes not related to stake deduction
-      // The closeContract function already handles specific trade outcome toasts.
-      if(ob!==null&&ob!==undefined&&nb > ob && Math.abs(nb-ob)>0.001){
-        flashBalance();
+      if(ob!==null&&ob!==undefined&&Math.abs(nb-ob)>0.001){
+        const diff=+(nb-ob).toFixed(2);
+        // Only show notification for gains or significant losses (not small sync adjustments)
+        if(diff > 0.001 || diff < -0.5) {
+          flashBalance();
+          toast((diff>0?"💰 Balance +":"💸 Balance ")+Math.abs(diff).toFixed(2)+" → "+userCurrency+" "+nb.toFixed(2),diff>0?"g":"y",5000);
+        }
       }
-      // Optionally, if a toast is still desired for *any* balance update from Deriv, it should be generic
-      // and not imply a deduction if it's just synchronizing after an optimistic local update.
-      // For now, we'll rely on closeContract for trade-specific toasts.
-      // toast("Balance updated: "+userCurrency+" "+nb.toFixed(2),"g",2000); // Less intrusive toast
-      // );
     }
     return;
   }
@@ -1966,6 +1964,7 @@ function buyContract(fromAI){
   con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
   
   // Deduct stake immediately for simulation
+  // For simulation accounts, we still deduct locally
   if(!con.isReal && realBalance !== null) {
     realBalance = parseFloat((realBalance - currentStake).toFixed(2));
     const acct=accountList.find(a=>a.loginid===activeLoginid);
@@ -1979,13 +1978,9 @@ function buyContract(fromAI){
   
   if(con.isReal){
     isBuying=true;
-    // Deduct stake immediately for REAL accounts too for instant feedback
-    if(realBalance !== null) {
-      realBalance = parseFloat((realBalance - currentStake).toFixed(2));
-      const acct=accountList.find(a=>a.loginid===activeLoginid);
-      if(acct)acct.balance=realBalance;
-      updateBalanceUI();
-    }
+    // CRITICAL: DO NOT manually deduct stake for real accounts.
+    // Deriv automatically deducts the stake and sends a balance update via WebSocket.
+    // Manually deducting here causes a "double deduction" once the server update arrives.
     send({buy:'1',price:currentStake,parameters:{contract_type:'ACCU',symbol:sym,amount:currentStake,basis:'stake',growth_rate:gr/100,currency:userCurrency}});
     // Fail-safe for isBuying
     setTimeout(()=>{isBuying=false;},10000);
@@ -2026,13 +2021,12 @@ function closeContract(reason,fromAI){
     if(won && actualProfit > 0)showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
   }
 
-  // Update local balance immediately for both REAL and SIM
-  if(realBalance !== null){
+  // Update local balance immediately ONLY for SIM accounts.
+  // For REAL accounts, we wait for Deriv's official balance update to ensure 100% accuracy.
+  if(realBalance !== null && !isReal){
     if(won && finalPayout > 0){
       realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
     }
-    // If lost, balance was already deducted at entry, so we do nothing here.
-    
     const acct=accountList.find(a=>a.loginid===activeLoginid);
     if(acct)acct.balance=realBalance;
     updateBalanceUI();
