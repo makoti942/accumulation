@@ -1994,29 +1994,17 @@ function closeContract(reason,fromAI){
   // CRITICAL: A win is only if reason is NOT lost/KO
   const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
   
-  // P&L Calculation: Accumulators profit is growth-based.
-  // We prioritize Deriv's reported payout if available, otherwise use local calculation.
-  let payout = con.payout || stk;
-  let pnl = con.pnl || 0;
-  
-  // Ensure consistency: If we won, payout MUST be >= stake
-  if (won) {
-    if (payout < stk) payout = stk + Math.max(0, pnl);
-    if (pnl <= 0 && payout > stk) pnl = payout - stk;
-  } else {
-    payout = 0;
-    pnl = -stk;
-  }
-
-  const finalPayout = parseFloat(payout.toFixed(2));
-  const actualProfit = parseFloat(pnl.toFixed(2));
+  // Capture Final Profit/Payout strictly from Deriv's official contract data.
+  // For Accumulators, poc.profit is the exact net amount added to the balance.
+  let finalProfit = won ? parseFloat((con.pnl || 0).toFixed(2)) : -stk;
+  let finalPayout = won ? parseFloat((con.payout || stk).toFixed(2)) : 0;
 
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
     aiTrades++;
-    aiPnl=parseFloat((aiPnl+actualProfit).toFixed(2));
-    addHistItem({won,pnl:actualProfit,reason,ticks:tks});
-    if(won) showFlash('flashWin','WIN +$'+actualProfit.toFixed(2)+' ('+tks+'t)',2500);
+    aiPnl = parseFloat((aiPnl + finalProfit).toFixed(2));
+    addHistItem({won, pnl: finalProfit, reason, ticks: tks});
+    if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
   }
 
   // Local balance addition removed.
@@ -2034,7 +2022,7 @@ function closeContract(reason,fromAI){
   exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
   renderNoContract();resetBarrierUI();
   $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-  toast((won?'✅ WIN +$'+actualProfit.toFixed(2)+' (payout $'+finalPayout.toFixed(2)+')':'❌ LOSS -$'+stk.toFixed(2))+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'r',5000);
+  toast((won ? '✅ WIN +$' + finalProfit.toFixed(2) : '❌ LOSS -$'+stk.toFixed(2)) + ' | ' + reason, won ? 'g' : 'r', 5000);
 }
 
 // ═══════════════════════════════════════════
