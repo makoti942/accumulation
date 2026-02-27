@@ -1480,42 +1480,41 @@ function processTick(tick, isHistory){
     // ══════════════════════════════════════════════════
     const n=tickBuf.length;
 
-    // ZERO-LOSS PREDICTIVE EXIT: Snipes the exit before the danger appears
-    // L1: Physical edge — price within 0.15% of barrier (Ultra-sensitive)
-    const L1=p>=con.upper*0.9985||p<=con.lower*1.0015;
+    // INDICATOR-DRIVEN ZERO-LOSS EXIT
+    // L1: Bollinger Band Breach — Exit if price touches outer bands in danger zone
+    const prices = tickBuf.slice(-20).map(b=>b.p);
+    const sma = prices.reduce((a,b)=>a+b,0)/20;
+    const std = Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-sma,2),0)/20);
+    const bbU = sma + (std * 2);
+    const bbL = sma - (std * 2);
+    const L1 = (nearBar===con.upper && p > bbU*0.9995) || (nearBar===con.lower && p < bbL*1.0005);
 
-    // L2: Predictive Momentum — Detects "Micro-Bursts" toward barrier
-    let L2=false;
-    if(n>=5&&safetyPct<55){
-      const v1=tickBuf[n-1].p-tickBuf[n-2].p;
-      const v2=tickBuf[n-2].p-tickBuf[n-3].p;
-      const toBar=(nearBar===con.upper&&v1>0)||(nearBar===con.lower&&v1<0);
-      const accel=Math.abs(v1)>Math.abs(v2)*0.8; 
-      L2=toBar&&accel;
-    }
+    // L2: Keltner Channel Extreme — Exit if price exceeds ATR-based channels
+    const ranges = tickBuf.slice(-20).map((b,i,ar)=>i===0?0:Math.abs(b.p-ar[i-1].p));
+    const atr = ranges.reduce((a,b)=>a+b,0)/20;
+    const kcU = sma + (atr * 2.2);
+    const kcL = sma - (atr * 2.2);
+    const L2 = (nearBar===con.upper && p > kcU) || (nearBar===con.lower && p < kcL);
 
-    // L3: Predictive Break Probability — Exit if BP hits 40% (Very safe)
-    const L3=bp>=40&&safetyPct<65;
+    // L3: Predictive Break Probability — Exit if BP hits 35% (Ultra-safe)
+    const L3=bp>=35&&safetyPct<70;
 
-    // L4: Chaos Detection — Exit if market becomes unstable
+    // L4: Volatility Spike — Exit if micro-volatility explodes
     let L4=false;
-    if(n>=20){
-      const r20=tickBuf.slice(-20).map(b=>b.p);
-      const m=r20.reduce((a,b)=>a+b,0)/20;
-      const std=Math.sqrt(r20.reduce((a,b)=>a+Math.pow(b-m,2),0)/20);
-      const chaosScore = (std/p)*10000;
-      if(chaosScore > 15 && safetyPct < 70) L4=true; // Market is too "noisy"
+    if(n>=5){
+      const microV = Math.sqrt(tickBuf.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b.p-(arr.reduce((x,y)=>x+y.p,0)/5),2),0)/5);
+      if(microV > std * 1.4 && safetyPct < 75) L4=true;
     }
 
-    // L5: Reversal Guard — Exit on ANY tick toward barrier if safety < 65%
+    // L5: Reversal Guard — Exit on ANY tick toward barrier if safety < 70%
     let L5=false;
-    if(n>=2&&safetyPct<65){
+    if(n>=2&&safetyPct<70){
       const toBar = (nearBar===con.upper && tickBuf[n-1].p > tickBuf[n-2].p) || (nearBar===con.lower && tickBuf[n-1].p < tickBuf[n-2].p);
       L5=toBar;
     }
 
-    // L6: Hold Score Panic — Exit if AI confidence drops below 50%
-    const L6=hs<50||safetyPct<50;
+    // L6: Neural Hold Score — Exit if AI confidence drops below 60%
+    const L6=hs<60||safetyPct<55;
 
     let L7=false;
     if(n>=4&&safetyPct<30){
@@ -1592,7 +1591,7 @@ function processTick(tick, isHistory){
 // CRITICAL: Distance clamp ensures score can ONLY be high near barrier
 // ═══════════════════════════════════════════
 function computeBreakProb(price,contract,buf){
-  if(!contract||buf.length<4)return 0;
+  if(!contract||buf.length<20)return 0;
   let score=0;
   const n=buf.length;
   const upper=contract.upper,lower=contract.lower;
@@ -1602,78 +1601,41 @@ function computeBreakProb(price,contract,buf){
   const nearBar=dU<dL?upper:lower;
   const proxRatio=1-(nearDist/half);
 
-  // F1: Proximity — exponential, 45pts max
-  score+=Math.max(0,Math.pow(proxRatio,1.8)*45);
+  // ═══════════════════════════════════════════
+  // INDICATOR MATRIX: Bollinger Bands & Keltner Channels
+  // ═══════════════════════════════════════════
+  const prices = buf.slice(-20).map(b=>b.p);
+  const sma = prices.reduce((a,b)=>a+b,0)/20;
+  const std = Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-sma,2),0)/20);
+  const bbUpper = sma + (std * 2);
+  const bbLower = sma - (std * 2);
+  
+  // Keltner Channels (using simple range for ATR approximation)
+  const ranges = buf.slice(-20).map((b,i,ar)=>i===0?0:Math.abs(b.p-ar[i-1].p));
+  const atr = ranges.reduce((a,b)=>a+b,0)/20;
+  const kcUpper = sma + (atr * 2.5);
+  const kcLower = sma - (atr * 2.5);
 
-  // F2: Velocity toward barrier, 22pts
+  // F1: Bollinger Band Breach (Predictive), 30pts
+  if(nearBar===upper && price > bbUpper) score += 30;
+  if(nearBar===lower && price < bbLower) score += 30;
+
+  // F2: Keltner Channel Extreme, 20pts
+  if(nearBar===upper && price > kcUpper) score += 20;
+  if(nearBar===lower && price < kcLower) score += 20;
+
+  // F3: Proximity — exponential, 25pts max
+  score+=Math.max(0,Math.pow(proxRatio,1.8)*25);
+
+  // F4: Velocity toward barrier, 15pts
   const vWin=Math.min(5,n-1);
   const vel=(buf[n-1].p-buf[n-1-vWin].p)/vWin;
   const velToBar=(nearBar===upper&&vel>0)||(nearBar===lower&&vel<0);
-  if(velToBar)score+=Math.min(22,Math.abs(vel)/half*1800);
+  if(velToBar)score+=Math.min(15,Math.abs(vel)/half*1500);
 
-  // F3: Acceleration, 13pts
-  if(n>=4){
-    const v1=buf[n-1].p-buf[n-2].p;
-    const v2=buf[n-2].p-buf[n-3].p;
-    const acc=v1-v2;
-    const accToBar=(nearBar===upper&&acc>0)||(nearBar===lower&&acc<0);
-    if(accToBar)score+=Math.min(13,Math.abs(acc)/half*1200);
-  }
-
-  // F4: Consecutive streak, 12pts
-  let streak=0;
-  for(let i=n-1;i>=Math.max(0,n-15);i--){const tw=(nearBar===upper&&buf[i].up)||(nearBar===lower&&!buf[i].up);if(tw)streak++;else break;}
-  score+=Math.min(12,streak*1.5);
-
-  // F5: Recent barrier test, 10pts
-  if(n>=6){
-    const last6=buf.slice(n-6).map(b=>b.p);
-    if(nearBar===upper&&Math.max(...last6)/upper>0.9988)score+=10;
-    if(nearBar===lower&&lower/Math.min(...last6)>0.9988)score+=10;
-  }
-
-  // F6: Trend alignment, 8pts
-  if(n>=12){
-    const m1=buf.slice(n-6).reduce((a,b)=>a+b.p,0)/6;
-    const m2=buf.slice(n-12,n-6).reduce((a,b)=>a+b.p,0)/6;
-    if((nearBar===upper&&m1>m2)||(nearBar===lower&&m1<m2))score+=8;
-  }
-
-  // F7: Volatility expansion, 7pts
-  if(n>=20){
-    const r20=buf.slice(n-20).map(b=>b.p);
-    const m=r20.reduce((a,b)=>a+b,0)/20;
-    const std=Math.sqrt(r20.reduce((a,b)=>a+Math.pow(b-m,2),0)/20);
-    if((std/price)*100>0.20&&proxRatio>0.45)score+=7;
-  }
-
-  // F8: Range compression toward barrier, 8pts
-  if(n>=10){
-    const last10=buf.slice(n-10).map(b=>b.p);
-    const recentMax=Math.max(...last10.slice(5)),recentMin=Math.min(...last10.slice(5));
-    const oldMax=Math.max(...last10.slice(0,5)),oldMin=Math.min(...last10.slice(0,5));
-    if(nearBar===upper&&recentMax>oldMax&&(recentMax-recentMin)<(oldMax-oldMin)*1.2)score+=8;
-    if(nearBar===lower&&recentMin<oldMin&&(recentMax-recentMin)<(oldMax-oldMin)*1.2)score+=8;
-  }
-
-  // F9: RSI extreme, 6pts
-  if(n>=8){
-    let g=0,l=0;
-    for(let i=n-7;i<n;i++){const c=buf[i].p-buf[i-1].p;if(c>0)g+=c;else l+=Math.abs(c);}
-    const rsi=100-100/(1+((g/7)||0.001)/((l/7)||0.001));
-    if(nearBar===upper&&rsi>70)score+=6;
-    if(nearBar===lower&&rsi<30)score+=6;
-  }
-
-  // F10: NEURAL SPIKE-GUARD (Predictive Analysis)
-  // Detects sudden momentum compression followed by directional burst
-  if(n>=15){
-    const last15=buf.slice(-15).map(b=>b.p);
-    const microVol=Math.sqrt(last15.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/5),2),0)/5);
-    const macroVol=Math.sqrt(last15.reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/15),2),0)/15);
-    // If micro-volatility suddenly spikes relative to macro, or if density compresses
-    if(microVol > macroVol * 1.6 || microVol < macroVol * 0.3) score += 20;
-  }
+  // F5: Neural Spike-Guard (Predictive Analysis)
+  const microVol=Math.sqrt(prices.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/5),2),0)/5);
+  if(microVol > std * 1.5 || microVol < std * 0.2) score += 25;
 
   // ═══ CRITICAL DISTANCE CLAMP ═══
   // This is the KEY to preventing early exits:
