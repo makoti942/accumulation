@@ -1443,11 +1443,18 @@ function processTick(tick, isHistory){
   // ── ACTIVE CONTRACT ──
   if(con&&!exitingNow&&!isHistory){
     con.ticks++;ticksHeld++;
-    // Simulate payout growth for non-real contracts
+    // REAL-TIME P&L: Force update on every tick for both Real and Sim
+    const mult=Math.pow(1+gr/100,con.ticks)-1;
+    const simPnl=parseFloat((con.stake*mult).toFixed(2));
+    const simPayout=parseFloat((con.stake+simPnl).toFixed(2));
+    
     if(!con.realId){
-      const mult=Math.pow(1+gr/100,con.ticks)-1;
-      con.pnl=+(con.stake*mult).toFixed(2);
-      con.payout=+(con.stake+con.pnl).toFixed(2);
+      con.pnl=simPnl;
+      con.payout=simPayout;
+    } else {
+      // For real accounts, if Deriv hasn't sent an update yet, show the calculated value
+      if(con.pnl === 0) con.pnl = simPnl;
+      if(con.payout === con.stake) con.payout = simPayout;
     }
 
     const dU=con.upper-p,dL=p-con.lower;
@@ -1930,6 +1937,13 @@ function buyContract(fromAI){
   const p=prevP,d=barrierDist(p);
   
   con={entry:p,upper:parseFloat((p+d).toFixed(dp+2)),lower:parseFloat((p-d).toFixed(dp+2)),ticks:0,stake:currentStake,pnl:0,payout:currentStake,start:now(),byAI:!!fromAI,realId:null,isReal:authed&&!!activeToken};
+  
+  // Deduct stake immediately for simulation
+  if(!con.isReal && realBalance !== null) {
+    realBalance = parseFloat((realBalance - currentStake).toFixed(2));
+    updateBalanceUI();
+  }
+
   ticksHeld=0;drawBarriers();updateConUI();$('exitMeter').classList.add('on');
   
   if(!fromAI)toast('Contract @ '+p.toFixed(dp)+(con.isReal?' [REAL]':' [SIM]'),'g');
@@ -1966,8 +1980,13 @@ function closeContract(reason,fromAI){
   }
 
   if(isReal && realId){
-    // For real accounts: just send the sell. Balance will update via subscription.
+    // For real accounts: send sell and FORCE balance update
     send({sell:realId,price:0});
+    setTimeout(()=>send({balance:1,subscribe:1}), 500);
+  } else if(!isReal && realBalance !== null) {
+    // For sim accounts: update local balance immediately
+    realBalance = parseFloat((realBalance + payout).toFixed(2));
+    updateBalanceUI();
   }
 
   isBuying=false;con=null;clearBarriers();
@@ -1995,10 +2014,12 @@ function onKO(price){
   }
   if(isReal&&realId){
     send({sell:realId,price:0});
-    // Balance will auto-update via sell response + balance subscription
+    // Force balance update after KO
+    setTimeout(()=>send({balance:1,subscribe:1}), 500);
     toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
   }else if(!isReal&&realBalance!==null){
-    // Sim: stake already deducted, nothing more to deduct
+    // Sim: balance already had stake deducted at entry, nothing to add back on KO
+    updateBalanceUI();
     toast('❌ KO '+dir+' -$'+loss.toFixed(2)+' → '+userCurrency+' '+realBalance.toFixed(2),'r',6000);
   }
   isBuying=false;con=null;clearBarriers();
