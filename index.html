@@ -101,8 +101,8 @@ header{height:48px;background:var(--card);border-bottom:1px solid var(--border);
 .bnav-btn .bnav-ico{font-size:22px;line-height:1;}
 @media(max-width:600px){
   .voice-fab{bottom:68px!important;}
-  .voice-panel{bottom:56px!important;}
-  #toast{bottom:70px!important;}
+  .voice-panel{bottom:58px!important;}
+  #toast{bottom:72px!important;}
 }
 
 /* SECTIONS */
@@ -433,30 +433,54 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   .ind-card{padding:4px 6px;}
   .ind-card .val{font-size:10px;}
   .pattern-box{padding:6px;}
+  /* Chart overlays: tighter on mobile */
   .ai-ov{max-width:48%;padding:6px 8px;}
   .bar-leg{max-width:40%;padding:5px 7px;}
   .bar-val{font-size:8px;}
-  .exit-meter{min-width:160px;padding:5px 10px;bottom:6px;}
+  /* Exit meter: wider, closer to bottom nav */
+  .exit-meter{min-width:160px;max-width:88vw;padding:5px 10px;bottom:66px;}
   .em-score{font-size:13px;}
-  .right{width:88vw!important;max-width:300px;}
+  /* Right panel: full width slide-in */
+  .right{width:92vw!important;max-width:360px;}
+  /* Stats grid: 2 columns, comfortable */
   .stat-grid{grid-template-columns:1fr 1fr;gap:4px;padding:6px;}
-  .scard .sv{font-size:13px;}
+  .scard{padding:8px 6px;}
+  .scard .sl{font-size:9px;}
+  .scard .sv{font-size:15px;}
+  /* Contract box: bigger touch targets */
+  .con-row{font-size:12px;margin-bottom:5px;}
+  .sell-btn{padding:12px;font-size:13px;margin-top:8px;}
+  /* Bottom nav */
   .bottom-nav{height:58px;}
   .bnav-btn .bnav-ico{font-size:20px;}
   .bnav-btn{font-size:8px;}
-  .mob-topbar{height:40px;}
-  .mob-btn{padding:5px 9px;font-size:10px;}
+  /* Mobile topbar */
+  .mob-topbar{height:44px;gap:5px;}
+  .mob-btn{padding:6px 10px;font-size:10px;}
   .mob-price{font-size:13px;}
+  /* Left panel sections */
   .sec{padding:7px 9px;}
   .gr-grid{gap:3px;}
-  .gr-btn{padding:6px 0;font-size:10px;}
-  .buy-btn{padding:12px;font-size:13px;}
+  .gr-btn{padding:7px 0;font-size:11px;}
+  .buy-btn{padding:14px;font-size:14px;}
+  /* Header */
   header{padding:0 6px;gap:3px;}
   .hdr-badge{padding:3px 5px;}
   .hdr-badge .val{font-size:10px;}
+  /* Scan modal */
   .scan-modal{padding:12px;}
-  .voice-panel{max-height:60vh;}
-  .vp-chat{min-height:80px;max-height:30vh;}
+  /* Voice panel */
+  .voice-panel{max-height:65vh;}
+  .vp-chat{min-height:80px;max-height:32vh;}
+  /* AI hist items: bigger touch area */
+  .hist-item{padding:6px 8px;margin-bottom:4px;}
+  /* Tick feed: slightly bigger */
+  .tick-row{padding:5px 8px;font-size:11px;}
+  /* Stake input: bigger */
+  .stake-row input{font-size:14px;padding:8px 9px;}
+  .sadj{width:36px;height:36px;font-size:20px;}
+  /* User card balance: prominent */
+  .user-bal{font-size:20px;}
 }
 @media(max-width:380px){
   .login-title{font-size:15px;}
@@ -464,6 +488,8 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   .ai-ov{display:none;}
   .mob-price{font-size:12px;}
   .chart-top .price-main{font-size:14px;}
+  .mob-topbar{height:42px;}
+  .mob-btn{padding:5px 8px;font-size:9px;}
 }
 </style>
 </head>
@@ -524,7 +550,11 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <!-- MOBILE TOP BAR -->
 <div class="mob-topbar" id="mobTopbar">
   <button class="mob-btn" id="mobLeftBtn">☰ Controls</button>
-  <div class="mob-price" id="mobPrice">—</div>
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;min-width:0;">
+    <div class="mob-price" id="mobPrice">—</div>
+    <div id="mobPnlRow" style="display:none;font-size:9px;font-weight:700;color:var(--green);">—</div>
+  </div>
+  <div class="mob-bal-pill" id="mobBalPill" style="display:none;background:#0a0d12;border:1px solid #ffd60044;border-radius:6px;padding:3px 7px;font-size:10px;font-weight:700;color:var(--gold);white-space:nowrap;flex-shrink:0;">💰 <span id="mobBalance">—</span></div>
   <button class="mob-btn" id="mobRightBtn">📊 Stats</button>
 </div>
 
@@ -766,7 +796,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <div class="bottom-nav" id="bottomNav">
   <button class="bnav-btn" id="bnLeft"><span class="bnav-ico">☰</span><span>Controls</span></button>
   <button class="bnav-btn active" id="bnChart"><span class="bnav-ico">📈</span><span>Chart</span></button>
-  <button class="bnav-btn" id="bnRight"><span class="bnav-ico">📊</span><span>Stats</span></button>
+  <button class="bnav-btn" id="bnRight" style="position:relative;"><span class="bnav-ico">📊</span><span>Stats</span><span id="bnTradeDot" style="display:none;position:absolute;top:6px;right:18px;width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:blink 1s infinite;"></span></button>
   <button class="bnav-btn" id="bnVoice"><span class="bnav-ico">🎤</span><span>ARIA</span></button>
 </div>
 
@@ -794,6 +824,8 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   </div>
 </div>
 <button class="voice-fab" id="voiceFab" title="Open ARIA">🎤</button>
+<!-- MOBILE QUICK SELL BUTTON -->
+<button id="mobSellBtn" onclick="if(con)closeContract('Manual',false)" style="display:none;position:fixed;bottom:70px;left:10px;background:linear-gradient(135deg,#b91c1c,#ff444f);color:#fff;border:none;border-radius:50px;padding:10px 18px;font-size:12px;font-weight:800;cursor:pointer;z-index:9989;box-shadow:0 4px 20px #ff3d7160;-webkit-tap-highlight-color:transparent;animation:exitPulse .8s infinite;">🟥 SELL NOW</button>
 
 <!-- SCAN MODAL -->
 <div class="scan-overlay" id="scanOverlay">
@@ -878,7 +910,7 @@ function showFlash(id,msg,dur){
   el._t=setTimeout(()=>el.classList.remove('show'),dur||2200);
 }
 function flashBalance(){
-  [$('hBalance'),$('userBal')].forEach(el=>{
+  [$('hBalance'),$('userBal'),$('mobBalance')].forEach(el=>{
     if(!el)return;
     el.classList.remove('bal-flash');
     void el.offsetWidth;
@@ -1138,7 +1170,10 @@ function handle(d){
     const poc=d.proposal_open_contract;
     if(!poc||!con)return;
     if(poc.profit!==undefined)con.pnl=parseFloat(poc.profit);
+    // bid_price = current payout value (stake + accrued profit)
     if(poc.bid_price!==undefined)con.payout=parseFloat(poc.bid_price);
+    // sell_price = final settled amount when contract closes
+    if(poc.sell_price!==undefined&&poc.sell_price>0)con.payout=parseFloat(poc.sell_price);
     if(poc.buy_price!==undefined)con.stake=parseFloat(poc.buy_price);
     if(poc.barrier)con.upper=parseFloat(poc.barrier);
     if(poc.low_barrier)con.lower=parseFloat(poc.low_barrier);
@@ -1166,9 +1201,9 @@ function handle(d){
       }else toast('Sell error: '+(d.error.message||''),'y',4000);
       return;
     }
-    // Trust the balance subscription for real/demo accounts to avoid double-counting
-    // We only send a balance request to force an update if needed
-    setTimeout(()=>send({balance:1,subscribe:1}),200);
+    // The balance was already updated optimistically in closeContract().
+    // Poll once more to confirm Deriv's real balance (handles any edge cases).
+    setTimeout(()=>send({balance:1}),800);
     return;
   }
 }
@@ -1180,6 +1215,9 @@ function updateBalanceUI(){
   const v=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
   $('hBalance').textContent=v;
   $('userBal').textContent=v;
+  // Mobile balance pill — always visible on phone
+  if($('mobBalance'))$('mobBalance').textContent=v;
+  if($('mobBalPill'))$('mobBalPill').style.display=realBalance!==null?'flex':'none';
 }
 function showUserCard(){$('userSection').style.display='block';$('userName').textContent=userInfo.name||'Trader';$('userUid').textContent=userInfo.loginid||'—';}
 
@@ -1945,11 +1983,15 @@ function closeContract(reason,fromAI){
   const tks=con.ticks;
   const byAI=con.byAI,realId=con.realId,isReal=con.isReal;
 
-  // Calculate actual PNL. If payout is same as stake, it might be 0 but it's a win if it didn't KO.
-  // For Accumulators, even small wins are better than 0.00 log.
+  // Calculate actual PNL.
+  // payout = bid_price from Deriv (what you receive back = stake + profit)
+  // pnl = profit only (payout - stake)
   let pnl = con.pnl;
-  if(pnl === 0 && tks > 0) pnl = parseFloat((payout - stk).toFixed(2));
+  // If pnl is still 0 but we have ticks, recalculate from payout
+  if(pnl === 0 && tks > 0 && payout > stk) pnl = parseFloat((payout - stk).toFixed(2));
   const won = pnl > 0 || (pnl === 0 && reason !== 'Deriv:lost' && reason !== 'KO');
+  // finalPayout = full amount returned to balance: stake + profit (on win), 0 (on loss/KO)
+  const finalPayout = won ? parseFloat((stk + Math.max(0, pnl)).toFixed(2)) : 0;
 
   if(byAI||fromAI){
     if(won)aiWins++;else aiLoss++;
@@ -1959,12 +2001,21 @@ function closeContract(reason,fromAI){
   }
 
   if(isReal && realId){
-    // For real accounts: send sell and FORCE balance update
+    // For real accounts: optimistically update balance immediately with full payout
+    // finalPayout = stake + profit (on win), 0 (on loss/KO — balance already deducted by Deriv)
+    if(realBalance !== null && finalPayout > 0){
+      realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      if(acct)acct.balance=realBalance;
+      updateBalanceUI();
+      flashBalance();
+    }
     send({sell:realId,price:0});
-    setTimeout(()=>send({balance:1,subscribe:1}), 500);
+    // Poll balance once after sell to confirm real value from Deriv
+    setTimeout(()=>send({balance:1}), 1500);
   } else if(!isReal && realBalance !== null) {
-    // For sim accounts: update local balance immediately
-    realBalance = parseFloat((realBalance + payout).toFixed(2));
+    // For sim accounts: update local balance immediately with finalPayout
+    realBalance = parseFloat((realBalance + finalPayout).toFixed(2));
     updateBalanceUI();
   }
 
@@ -1972,7 +2023,7 @@ function closeContract(reason,fromAI){
   exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
   renderNoContract();resetBarrierUI();
   $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-  toast((won?'✅ +$':'❌ -$')+Math.abs(pnl).toFixed(2)+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'r',4000);
+  toast((won?'✅ WIN +$'+pnl.toFixed(2)+' (payout $'+finalPayout.toFixed(2)+')':'❌ LOSS -$'+stk.toFixed(2))+' | '+reason+(isReal?' [R]':' [S]'),won?'g':'r',5000);
 }
 
 // ═══════════════════════════════════════════
@@ -1993,8 +2044,8 @@ function onKO(price){
   }
   if(isReal&&realId){
     send({sell:realId,price:0});
-    // Force balance update after KO
-    setTimeout(()=>send({balance:1,subscribe:1}), 500);
+    // Poll balance after KO to confirm Deriv's deduction
+    setTimeout(()=>send({balance:1}), 1500);
     toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
   }else if(!isReal&&realBalance!==null){
     // Sim: balance already had stake deducted at entry, nothing to add back on KO
@@ -2014,6 +2065,17 @@ function onKO(price){
 // ═══════════════════════════════════════════
 function updateConUI(){
   if(!con){renderNoContract();return;}
+  // Show green dot on Stats nav button when trade is active
+  if($('bnTradeDot'))$('bnTradeDot').style.display='block';
+  // Show mobile quick-sell button
+  if($('mobSellBtn'))$('mobSellBtn').style.display='block';
+  // Update mobile P&L row in topbar
+  if($('mobPnlRow')){
+    const pnlSign=con.pnl>=0?'+':'';
+    $('mobPnlRow').textContent='📈 P&L: '+pnlSign+'$'+Math.abs(con.pnl).toFixed(2)+' | '+con.ticks+'t';
+    $('mobPnlRow').style.color=con.pnl>=0?'var(--green)':'var(--red)';
+    $('mobPnlRow').style.display='block';
+  }
   const pnlColor=con.pnl>=0?'var(--green)':'var(--red)';
   const elapsed=Math.round((now()-con.start)/1000);
   const barW=Math.min(100,Math.abs(con.pnl/con.stake)*200);
@@ -2039,7 +2101,12 @@ function updateConUI(){
     +'<button class="sell-btn" onclick="closeContract(\'Manual\',false)">Sell Now</button>'
     +'</div></div>';
 }
-function renderNoContract(){$('conPanel').innerHTML='<div class="no-con"><div class="ico">🎯</div><div>'+(aiOn?'AI Sniper hunting…':'No active contract')+'</div><div style="font-size:10px;margin-top:3px;">'+(aiOn?'Analyzing markets…':'Click Buy Accumulator')+'</div></div>';}
+function renderNoContract(){
+  $('conPanel').innerHTML='<div class="no-con"><div class="ico">🎯</div><div>'+(aiOn?'AI Sniper hunting…':'No active contract')+'</div><div style="font-size:10px;margin-top:3px;">'+(aiOn?'Analyzing markets…':'Click Buy Accumulator')+'</div></div>';
+  if($('bnTradeDot'))$('bnTradeDot').style.display='none';
+  if($('mobSellBtn'))$('mobSellBtn').style.display='none';
+  if($('mobPnlRow'))$('mobPnlRow').style.display='none';
+}
 function resetBarrierUI(){if(prevP){const bd=barrierDist(prevP);$('bUpper').textContent=(prevP+bd).toFixed(dp);$('bLower').textContent=(prevP-bd).toFixed(dp);}$('bEntry').textContent='—';$('bSafety').textContent='—';$('infoHold').textContent='—';}
 function updatePhaseUI(){
   const el=$('sniperSt');el.className='sniper-st';
