@@ -568,7 +568,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
     <!-- AI TOGGLE fixed at top -->
     <div class="ai-wrap">
       <div class="ai-toggle-row">
-        <div class="ai-lbl"><span style="font-size:16px;">🤖</span> AI Sniper Engine</div>
+        <div class="ai-lbl"><span style="font-size:16px;">🤖</span> AI Sniper Engine <span id="sysStatus" style="font-size:9px;color:var(--green);margin-left:6px;opacity:0.7;">● v11.4 Ready</span></div>
         <label class="toggle"><input type="checkbox" id="aiToggle"><div class="tslider"></div></label>
       </div>
       <div class="ai-body" id="aiBody">
@@ -1232,9 +1232,16 @@ function handle(d){
   }
   if(t==='proposal'){
     if(d.error){
-      isBuying=false;pendingProposal=null;proposalReqId=null;
       const ec=d.error.code||'UnknownError';
       const em=d.error.message||d.error.code||'Unknown proposal error';
+      // AUTO-RECOVERY: Check for growth/barrier errors first and retry SILENTLY
+      if(ec==='InvalidGrowthRate' || /growth rate/i.test(em) || /barrier/i.test(em) || /not support/i.test(em)){
+        console.warn('[Deriv] Proposal rejected ('+em+') — retrying alternative growth.');
+        requestContractsFor(sym);
+        scheduleAlternativeGrowth();
+        return; 
+      }
+      isBuying=false;pendingProposal=null;proposalReqId=null;
       logError('[Deriv] Proposal FAILED',{code:ec,message:em,account:activeLoginid,authed,token_len:activeToken?activeToken.length:0,symbol:sym,growth_rate:gr,currency:userCurrency,raw_error:d.error});
       // Show error in AI status div so it's always visible
       const aiStatusEl = $('sigSub');
@@ -1275,13 +1282,9 @@ function handle(d){
     }
     // Guard: validate barriers are present
     if(!prop.barrier || !prop.low_barrier){
-      console.error('[Deriv] Proposal missing barriers:', {prop:prop, symbol:sym, growth_rate:gr, currency:userCurrency});
-      isBuying = false; pendingProposal = null;
-      const statusBar = $('derivStatusBar');
-      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ No barriers for ' + sym + ' at ' + gr + '% growth'; setTimeout(()=>{statusBar.style.display='none';},15000); }
-      toast('⚠️ Proposal has no barriers — ' + sym + ' may not support ' + gr + '% growth for ACCU', 'r', 8000);
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '⚠️ No barriers for ' + sym + ' at ' + gr + '%';
+      console.warn('[Deriv] Proposal returned without barriers — retrying alternative growth.');
+      requestContractsFor(sym);
+      scheduleAlternativeGrowth();
       return;
     }
     pendingProposal=prop;
@@ -2292,6 +2295,7 @@ function buyContract(fromAI){
       gr=allowed[0];
       setGrowthActiveButton();
       toast('Adjusted growth to '+gr+'% for '+sym,'y',3000);
+      const stEl=$('sysStatus');if(stEl)stEl.textContent='● Auto-Aligned: '+gr+'%';
     }
     growthRetry={sym,tried:new Set([gr]),count:0,fromAI:!!fromAI};
     // Ensure currency is set (fallback to USD if not yet received from authorize)
