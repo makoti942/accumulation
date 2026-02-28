@@ -884,6 +884,7 @@ let aiCool=false,phase='IDLE',scanAnim=0,exitProbability=0;
 let ticksHeld=0;
 // Break history per symbol
 let breakHistory={},volScores={},lastVolSwitch=0;
+let contractsCache={},growthRetry=null;
 // VOICE
 let voiceOpen=false,voiceRunning=false,isSpeaking=false;
 let recognition=null,ariaVoice=null,voiceRestartTimer=null;
@@ -1162,6 +1163,29 @@ function handle(d){
     if(ts===sym)processTick(tk);
     return;
   }
+  if(t==='contracts_for'){
+    try{
+      const cf=d.contracts_for||{};
+      const rows=Array.isArray(cf.available)?cf.available:[];
+      let acc=rows.find(x=>x.contract_type==='ACCU');
+      if(!acc){
+        contractsCache[sym]={supportsAccu:false,allowedGrowths:[]};
+        return;
+      }
+      let growths=[];
+      const grf=acc.growth_rate||acc.growth||acc.growth_rate_range||{};
+      if(Array.isArray(grf.options)) growths=grf.options.map(o=>Math.round(parseFloat((o.value??o))*100)).filter(x=>!isNaN(x));
+      else if(Array.isArray(grf.values)) growths=grf.values.map(v=>Math.round(parseFloat(v)*100)).filter(x=>!isNaN(x));
+      else if(grf.min!=null&&grf.max!=null){
+        const mn=Math.round(parseFloat(grf.min)*100),mx=Math.round(parseFloat(grf.max)*100);
+        for(let r=mn;r<=mx;r++)growths.push(r);
+      }
+      growths=growths.filter(x=>x>=1&&x<=5);
+      if(!growths.length) growths=[2,3,1,4,5];
+      contractsCache[sym]={supportsAccu:true,allowedGrowths:[...new Set(growths)]};
+    }catch(e){}
+    return;
+  }
   if(t==='history'){
     const h=d.history;
     if(h && h.prices && h.times){
@@ -1233,6 +1257,8 @@ function handle(d){
         authed = false;
         toast('🔄 Re-authorizing…', 'y', 3000);
         setTimeout(()=>{ if(ws&&ws.readyState===1&&activeToken) ws.send(JSON.stringify({authorize:activeToken})); else connect(); }, 1500);
+      } else if(ec==='InvalidGrowthRate' || /growth rate/i.test(em) || /barrier/i.test(em) || /not support/i.test(em)){
+        scheduleAlternativeGrowth();
       }
       return;
     }
@@ -2029,7 +2055,47 @@ function switchSym(newSym,newDp){
     // Request 100 historical ticks immediately
     send({ticks_history:sym,count:100,end:'latest',style:'ticks'});
     setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},400);
+    setTimeout(()=>{requestContractsFor(sym);},200);
   }
+}
+function requestContractsFor(sSymbol){
+  if(ws&&ws.readyState===1){
+    send({contracts_for:sSymbol,currency:userCurrency||'USD',product_type:'basic'});
+  }
+}
+function getAllowedGrowths(sSymbol){
+  const c=contractsCache[sSymbol];
+  if(c&&c.allowedGrowths&&c.allowedGrowths.length)return c.allowedGrowths;
+  return [2,3,1,4,5];
+}
+function setGrowthActiveButton(){
+  document.querySelectorAll('.gr-btn').forEach(b=>b.classList.toggle('active',parseInt(b.dataset.r)===gr));
+  $('sGrowth').textContent=gr+'%';
+}
+function scheduleAlternativeGrowth(){
+  const cache=contractsCache[sym];
+  const allowed=getAllowedGrowths(sym);
+  if(!growthRetry||growthRetry.sym!==sym){
+    growthRetry={sym,tried:new Set(),count:0,fromAI:!!window._lastEntryFromAI};
+  }
+  if(growthRetry.count>=5){
+    toast('ACCU not available on '+sym+' — scanning','r',6000);
+    isBuying=false;con=null;clearBarriers();renderNoContract();
+    doVolScanAndSwitch(true);
+    return;
+  }
+  growthRetry.count++;
+  growthRetry.tried.add(gr);
+  const candidate=allowed.find(r=>!growthRetry.tried.has(r));
+  if(!candidate){
+    toast('ACCU not available on '+sym+' — scanning','r',6000);
+    isBuying=false;con=null;clearBarriers();renderNoContract();
+    doVolScanAndSwitch(true);
+    return;
+  }
+  gr=candidate;
+  setGrowthActiveButton();
+  setTimeout(()=>buyContract(growthRetry.fromAI),200);
 }
 
 // ═══════════════════════════════════════════
@@ -2183,6 +2249,19 @@ function buyContract(fromAI){
       console.error('[Deriv] Invalid growth rate for proposal:', gr);
       return;
     }
+    const cc=contractsCache[sym];
+    if(cc&&cc.supportsAccu===false){
+      toast('ACCU not supported on '+sym+' — switching market','r',6000);
+      doVolScanAndSwitch(true);
+      return;
+    }
+    const allowed=getAllowedGrowths(sym);
+    if(allowed.indexOf(gr)===-1){
+      gr=allowed[0];
+      setGrowthActiveButton();
+      toast('Adjusted growth to '+gr+'% for '+sym,'y',3000);
+    }
+    growthRetry={sym,tried:new Set([gr]),count:0,fromAI:!!fromAI};
     // Ensure currency is set (fallback to USD if not yet received from authorize)
     const tradeCurrency = userCurrency || 'USD';
     const acctInfo = accountList.find(a => a.loginid === activeLoginid);
@@ -2339,7 +2418,6 @@ function onKO(price){
 // ═══════════════════════════════════════════
 function updateConUI(){
   if(!con){renderNoContract();return;}
-  // Ensure we are using 2 decimal places for financial data to match Deriv
   const displayPnl = parseFloat((con.pnl || 0).toFixed(2));
   const displayPayout = parseFloat((con.payout || con.stake).toFixed(2));
 
@@ -2357,6 +2435,13 @@ function updateConUI(){
   $('sPnl').style.color = pnlColor;
   $('sPayout').textContent = '$' + displayPayout.toFixed(2);
   const acctLabel=(()=>{const a=accountList.find(x=>x.loginid===activeLoginid);return a?(a.is_virtual?'DEMO':'REAL'):'REAL';})();
+  const hsVal=(typeof prevP==='number'&&tickBuf&&tickBuf.length>=3)?computeHoldScore(prevP,con,tickBuf):50;
+  const epVal=Math.round(exitProbability||0);
+  const rcCol=epVal<30?'var(--green)':epVal<55?'var(--gold)':'var(--red)';
+  const startMs=typeof con.start==='number'?(con.start>1e12?con.start:con.start*1000):0;
+  const elapsed=Math.max(0,Math.floor((now()-startMs)/1000));
+  const norm=con.stake?(con.pnl/con.stake):0;
+  const barW=Math.min(100,Math.max(0,50+norm*50));
   $('conPanel').innerHTML=
     '<div class="contract-box">'
     +'<div class="con-hdr"><h4>'+(con.byAI?'🤖 AI ':'')+'ACTIVE ['+acctLabel+']</h4><span class="pulse"></span></div>'
@@ -2365,8 +2450,8 @@ function updateConUI(){
     +'<div class="con-row"><span>Upper</span><span style="color:var(--green);">'+con.upper.toFixed(dp)+'</span></div>'
     +'<div class="con-row"><span>Lower</span><span style="color:var(--red);">'+con.lower.toFixed(dp)+'</span></div>'
     +'<div class="con-row"><span>Ticks</span><span style="color:var(--blue);">'+con.ticks+'</span></div>'
-    +'<div class="con-row"><span>Hold Safety</span><span style="color:'+(hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)')+';font-weight:800;">'+hs+'%</span></div>'
-    +'<div class="con-row"><span>Break Risk</span><span style="color:'+rc+';font-weight:800;">'+ep+'%</span></div>'
+    +'<div class="con-row"><span>Hold Safety</span><span style="color:'+(hsVal>60?'var(--green)':hsVal>30?'var(--gold)':'var(--red)')+';font-weight:800;">'+hsVal+'%</span></div>'
+    +'<div class="con-row"><span>Break Risk</span><span style="color:'+rcCol+';font-weight:800;">'+epVal+'%</span></div>'
     +'<div class="pnl-bar"><div class="pnl-fill" style="width:'+barW+'%;background:'+pnlColor+';"></div></div>'
     +'<div class="con-row"><span>P&L</span><span style="color:'+pnlColor+';font-size:14px;font-weight:800;">'+(con.pnl>=0?'+':'-')+'$'+Math.abs(con.pnl).toFixed(2)+'</span></div>'
     +'<div class="con-row"><span>Payout</span><span style="color:var(--gold);font-weight:700;">$'+(con.payout||con.stake).toFixed(2)+'</span></div>'
