@@ -1253,9 +1253,13 @@ function handle(d){
     }
     // Guard: validate barriers are present
     if(!prop.barrier || !prop.low_barrier){
-      console.error('[Deriv] Proposal missing barriers:', prop);
+      console.error('[Deriv] Proposal missing barriers:', {prop:prop, symbol:sym, growth_rate:gr, currency:userCurrency});
       isBuying = false; pendingProposal = null;
-      toast('⚠️ Proposal has no barriers — check symbol/growth_rate', 'r', 6000);
+      const statusBar = $('derivStatusBar');
+      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ No barriers for ' + sym + ' at ' + gr + '% growth'; setTimeout(()=>{statusBar.style.display='none';},15000); }
+      toast('⚠️ Proposal has no barriers — ' + sym + ' may not support ' + gr + '% growth for ACCU', 'r', 8000);
+      const aiStatusEl = $('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent = '⚠️ No barriers for ' + sym + ' at ' + gr + '%';
       return;
     }
     pendingProposal=prop;
@@ -2166,6 +2170,19 @@ function buyContract(fromAI){
     if(!currentStake || currentStake <= 0){
       toast('⚠️ Invalid stake amount', 'r', 4000); return;
     }
+        // Validate symbol is in the allowed list
+    const validSymbol = ALL_SYMS.find(s => s.sym === sym);
+    if(!validSymbol){
+      toast('❌ Invalid symbol: ' + sym + ' not in supported list', 'r', 5000);
+      console.error('[Deriv] Invalid symbol for proposal:', sym);
+      return;
+    }
+    // Validate growth rate is in range (1-5%)
+    if(gr < 1 || gr > 5){
+      toast('❌ Invalid growth rate: ' + gr + '% (must be 1-5%)', 'r', 5000);
+      console.error('[Deriv] Invalid growth rate for proposal:', gr);
+      return;
+    }
     // Ensure currency is set (fallback to USD if not yet received from authorize)
     const tradeCurrency = userCurrency || 'USD';
     const acctInfo = accountList.find(a => a.loginid === activeLoginid);
@@ -2206,13 +2223,23 @@ function buyContract(fromAI){
     const aiStatusEl = $('sigSub');
     if(aiStatusEl) aiStatusEl.textContent = '⏳ Waiting for Deriv proposal…';
 
-    // STEP 1: Request a proposal from Deriv to get real barriers and price
-    const sent = send(proposalPayload);
-    if(!sent){
-      isBuying = false; proposalReqId = null;
-      toast('❌ Failed to send proposal — WebSocket not ready', 'r', 5000);
-      return;
+    // CRITICAL: Clean up any stale proposal subscription before requesting a new one
+    // This prevents "AlreadySubscribedToProposal" errors from Deriv
+    if(ws && ws.readyState === 1){
+      ws.send(JSON.stringify({forget_all: 'proposal'}));
     }
+
+    // STEP 1: Request a proposal from Deriv to get real barriers and price
+    // Small delay to ensure forget_all completes before new proposal
+    setTimeout(() => {
+      if(isBuying && ws && ws.readyState === 1){
+        const sent = send(proposalPayload);
+        if(!sent){
+          isBuying = false; proposalReqId = null;
+          toast('❌ Failed to send proposal — WebSocket not ready', 'r', 5000);
+        }
+      }
+    }, 50);
 
     // Safety timeout: cancel if no response within 15 seconds
     const safetyTimer = setTimeout(() => {
