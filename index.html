@@ -884,7 +884,7 @@ let aiCool=false,phase='IDLE',scanAnim=0,exitProbability=0;
 let ticksHeld=0;
 // Break history per symbol
 let breakHistory={},volScores={},lastVolSwitch=0;
-let contractsCache={},growthRetry=null;
+let contractsCache={},growthRetry=null,forceExec=true;
 // VOICE
 let voiceOpen=false,voiceRunning=false,isSpeaking=false;
 let recognition=null,ariaVoice=null,voiceRestartTimer=null;
@@ -906,6 +906,12 @@ function toast(msg,col,dur){
   t.style.borderColor=col==='g'?'var(--green)':col==='r'?'var(--red)':col==='p'?'var(--purple)':col==='y'?'var(--gold)':'var(--border)';
   t.classList.add('show');clearTimeout(toast._t);
   toast._t=setTimeout(()=>t.classList.remove('show'),dur||3800);
+}
+function logError(tag,data){
+  try{
+    const e=new Error(tag);
+    console.error(tag,{data,stack:e.stack});
+  }catch(_){}
 }
 function showFlash(id,msg,dur){
   const el=$(id);
@@ -1229,18 +1235,7 @@ function handle(d){
       isBuying=false;pendingProposal=null;proposalReqId=null;
       const ec=d.error.code||'UnknownError';
       const em=d.error.message||d.error.code||'Unknown proposal error';
-      // Log full error details for debugging
-      console.error('[Deriv] Proposal FAILED:', {
-        code: ec,
-        message: em,
-        account: activeLoginid,
-        authed: authed,
-        token_len: activeToken ? activeToken.length : 0,
-        symbol: sym,
-        growth_rate: gr,
-        currency: userCurrency,
-        raw_error: d.error
-      });
+      logError('[Deriv] Proposal FAILED',{code:ec,message:em,account:activeLoginid,authed,token_len:activeToken?activeToken.length:0,symbol:sym,growth_rate:gr,currency:userCurrency,raw_error:d.error});
       // Show error in AI status div so it's always visible
       const aiStatusEl = $('sigSub');
       if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal failed: ' + em;
@@ -1258,6 +1253,7 @@ function handle(d){
         toast('🔄 Re-authorizing…', 'y', 3000);
         setTimeout(()=>{ if(ws&&ws.readyState===1&&activeToken) ws.send(JSON.stringify({authorize:activeToken})); else connect(); }, 1500);
       } else if(ec==='InvalidGrowthRate' || /growth rate/i.test(em) || /barrier/i.test(em) || /not support/i.test(em)){
+        requestContractsFor(sym);
         scheduleAlternativeGrowth();
       }
       return;
@@ -1318,12 +1314,25 @@ function handle(d){
     const buyPrice = parseFloat(prop.ask_price);
     console.log('[Deriv] Sending buy command:', {buy: prop.id, price: buyPrice});
     send({buy: prop.id, price: buyPrice});
+    try{ if(window._buySafetyTimer){ clearTimeout(window._buySafetyTimer); } }catch(e){}
+    window._buySafetyTimer = setTimeout(()=>{
+      try{
+        if(con && !con.realId){
+          logError('Buy timeout',{symbol:sym,gr,account:activeLoginid});
+          isBuying=false; pendingProposal=null; proposalReqId=null;
+          con=null; clearBarriers(); renderNoContract();
+          toast('⚠️ Buy timeout — retrying connection', 'y', 5000);
+          setTimeout(()=>{reconnDelay=800;connect();},800);
+        }
+      }catch(_){}
+    },12000);
     return;
   }
   if(t==='buy'){
     isBuying=false;pendingProposal=null;proposalReqId=null;
     // Clear the proposal safety timeout since we got a response
     if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
+    if(window._buySafetyTimer){ try{ clearTimeout(window._buySafetyTimer); window._buySafetyTimer=null; }catch(e){} }
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown buy error';
       console.error('[Deriv] Buy FAILED:', {code: ec, message: em, account: activeLoginid, raw: d.error});
@@ -2073,13 +2082,32 @@ function setGrowthActiveButton(){
   $('sGrowth').textContent=gr+'%';
 }
 function scheduleAlternativeGrowth(){
-  const cache=contractsCache[sym];
   const allowed=getAllowedGrowths(sym);
   if(!growthRetry||growthRetry.sym!==sym){
-    growthRetry={sym,tried:new Set(),count:0,fromAI:!!window._lastEntryFromAI};
+    growthRetry={sym,tried:new Set(),triedSymbols:new Set([sym]),count:0,fromAI:!!window._lastEntryFromAI};
   }
-  if(growthRetry.count>=5){
-    toast('ACCU not available on '+sym+' — scanning','r',6000);
+  if(growthRetry.count>=allowed.length){
+    if(forceExec){
+      const tried=growthRetry.triedSymbols||new Set([sym]);
+      const ordered=[...ALL_SYMS].sort((a,b)=>{
+        const va=(volScores[a.sym]&&volScores[a.sym].score)||0;
+        const vb=(volScores[b.sym]&&volScores[b.sym].score)||0;
+        return vb-va;
+      }).map(s=>s.sym);
+      const next=ordered.find(sy=>!tried.has(sy));
+      if(next){
+        growthRetry.triedSymbols.add(next);
+        const info=ALL_SYMS.find(s=>s.sym===next);
+        switchSym(next,info?info.dp:3);
+        requestContractsFor(next);
+        growthRetry.sym=next;
+        growthRetry.tried=new Set();
+        growthRetry.count=0;
+        setTimeout(()=>scheduleAlternativeGrowth(),350);
+        return;
+      }
+    }
+    toast('ACCU not available — scanning','r',6000);
     isBuying=false;con=null;clearBarriers();renderNoContract();
     doVolScanAndSwitch(true);
     return;
@@ -2088,6 +2116,10 @@ function scheduleAlternativeGrowth(){
   growthRetry.tried.add(gr);
   const candidate=allowed.find(r=>!growthRetry.tried.has(r));
   if(!candidate){
+    if(forceExec){
+      scheduleAlternativeGrowth();
+      return;
+    }
     toast('ACCU not available on '+sym+' — scanning','r',6000);
     isBuying=false;con=null;clearBarriers();renderNoContract();
     doVolScanAndSwitch(true);
@@ -2285,7 +2317,7 @@ function buyContract(fromAI){
       symbol: sym,                 // e.g. R_10, 1HZ10V
       amount: currentStake,        // stake amount (number)
       basis: 'stake',              // basis must be 'stake' for ACCU
-      growth_rate: gr / 100,       // e.g. 2% → 0.02 (required for ACCU)
+      growth_rate: parseFloat((gr/100).toFixed(3)),
       currency: tradeCurrency,     // e.g. 'USD'
       subscribe: 1                 // subscribe to proposal updates
     };
@@ -2760,6 +2792,22 @@ function setupEvents(){
   $('vpTextInput').addEventListener('keydown',e=>{if(e.key==='Enter')sendText();});
 }
 function sendText(){const v=$('vpTextInput').value.trim();if(!v)return;addVpMsg(v,'user');$('vpTextInput').value='';processVoiceCmd(v);}
+window.__dumpContractsFor=function(s){try{return contractsCache[s||sym]||null;}catch(_){return null;}}
+window.__selfTestGrowth=function(){
+  const old=gr;
+  const allowed=getAllowedGrowths(sym);
+  const seq=[];
+  const tried=new Set();
+  for(let i=0;i<allowed.length;i++){
+    const cand=allowed[i];
+    if(tried.has(cand))continue;
+    tried.add(cand);
+    seq.push(cand);
+  }
+  gr=old;
+  return {sym,allowed,sequence:seq};
+}
+window.__setForceExec=function(v){try{forceExec=!!v;toast('ForceExec:'+forceExec,'p',2000);}catch(_){}}
 </script>
 </body>
 </html>
