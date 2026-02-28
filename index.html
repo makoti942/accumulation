@@ -605,6 +605,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
           </div>
           <div class="vol-list" id="volScanList"><div style="text-align:center;color:var(--sub);font-size:10px;padding:6px;">Click SCAN to analyze…</div></div>
         </div>
+        <div id="derivStatusBar" style="display:none;background:#1a0a0a;border:1px solid var(--red);border-radius:6px;padding:6px 8px;margin:4px 0;font-size:10px;color:var(--red);word-break:break-word;"></div>
         <div class="scan-bar"><div class="scan-fill" id="scanFill"></div></div>
         <div class="ai-stats">
           <div class="aistat" style="text-align:center;"><div class="n" id="stWins" style="color:var(--green);">0</div><div class="l">Wins</div></div>
@@ -872,7 +873,7 @@ let reconnDelay=800,reconnTimer=null,connTO=null,appReady=false;
 let heartbeatTimer=null,lastMsgTime=0;
 let sym='R_10',dp=3,gr=2,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
-let isBuying=false,pendingProposal=null,proposalReqId=null;
+let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
 let tokenStore={},accountList=[],activeLoginid='';
 let priceHist=[],tickBuf=[],prevP=null;
 let hi=-Infinity,lo=Infinity,symBufs={};
@@ -1019,10 +1020,21 @@ function connect(){
   ws.onopen=()=>{
     clearTimeout(connTO);wsAlive=true;reconnDelay=800;lastMsgTime=now();
     setDot('on');$('connBanner').classList.remove('show');
+    // Reset any stale buying state from previous connection
+    if(isBuying){ isBuying=false; pendingProposal=null; proposalReqId=null; }
+    if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
+    // Forget all stale subscriptions (ticks, proposals) from previous session
+    ws.send(JSON.stringify({forget_all:'proposal'}));
+    ws.send(JSON.stringify({forget_all:'ticks'}));
     // Subscribe all symbols first
     ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
-    // Authorize after short delay
-    if(activeToken)setTimeout(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({authorize:activeToken}));},300);
+    // Authorize after short delay — session sync: auth MUST complete before any proposal is sent
+    if(activeToken)setTimeout(()=>{
+      if(ws&&ws.readyState===1){
+        console.log('[Deriv] Sending authorize request. Token length:', activeToken.length, 'Account:', activeLoginid);
+        ws.send(JSON.stringify({authorize:activeToken}));
+      }
+    },300);
     pingTimer=setInterval(()=>{if(ws&&ws.readyState===1){pingT=now();ws.send(JSON.stringify({ping:1}));}else clearInterval(pingTimer);},5000);
     heartbeatTimer=setInterval(()=>{
       if(now()-lastMsgTime>25000){
@@ -1050,7 +1062,28 @@ function send(obj){
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════
 function handle(d){
-  if(!d||!d.msg_type)return;
+  if(!d)return;
+
+  // ── GLOBAL ERROR HANDLER: Catch all Deriv error responses ──
+  // Handles cases where msg_type may be missing but error is present
+  if(d.error && !d.msg_type){
+    const ec = d.error.code || 'UnknownError';
+    const em = d.error.message || 'An unknown error occurred';
+    console.error('[Deriv API] Global error:', {code: ec, message: em, raw: d});
+    const aiStatusEl = $('sigSub');
+    if(aiStatusEl) aiStatusEl.textContent = '⚠️ Deriv: ' + em;
+    // Show in the persistent status bar
+    const statusBar = $('derivStatusBar');
+    if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '⚠️ ['+ec+']: ' + em; setTimeout(()=>{statusBar.style.display='none';},10000); }
+    toast('⚠️ Deriv Error [' + ec + ']: ' + em, 'r', 7000);
+    if(ec === 'InvalidToken' || ec === 'AuthorizationRequired'){
+      authed = false; isBuying = false; pendingProposal = null;
+    }
+    if(isBuying){ isBuying = false; pendingProposal = null; }
+    return;
+  }
+
+  if(!d.msg_type)return;
   const t=d.msg_type;
   if(['proposal','buy','sell'].includes(t))console.log('[Deriv API] Received:',t,d);
   if(t==='pong'){lat=now()-pingT;$('metaLat').textContent=lat+'ms';$('metaLat').style.color=lat<120?'var(--green)':lat<350?'var(--gold)':'var(--red)';$('sbPing').textContent='Ping:'+lat+'ms';return;}
@@ -1169,16 +1202,70 @@ function handle(d){
   }
   if(t==='proposal'){
     if(d.error){
-      isBuying=false;pendingProposal=null;
-      const em=d.error.message||d.error.code||'Unknown error';
-      const ec=d.error.code||'';
-      console.error('[Deriv] Proposal error:', {code:ec, message:em, account:activeLoginid, authed, token_len:activeToken?activeToken.length:0});
-      toast('Proposal error: '+em,'r',5000);
+      isBuying=false;pendingProposal=null;proposalReqId=null;
+      const ec=d.error.code||'UnknownError';
+      const em=d.error.message||d.error.code||'Unknown proposal error';
+      // Log full error details for debugging
+      console.error('[Deriv] Proposal FAILED:', {
+        code: ec,
+        message: em,
+        account: activeLoginid,
+        authed: authed,
+        token_len: activeToken ? activeToken.length : 0,
+        symbol: sym,
+        growth_rate: gr,
+        currency: userCurrency,
+        raw_error: d.error
+      });
+      // Show error in AI status div so it's always visible
+      const aiStatusEl = $('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal failed: ' + em;
+      const sigBoxEl = $('sigBox');
+      if(sigBoxEl){ sigBoxEl.className = 'sig-box WAIT'; }
+      const sigTxtEl = $('sigTxt');
+      if(sigTxtEl){ sigTxtEl.className = 'sig-txt WAIT'; sigTxtEl.textContent = 'PROPOSAL FAIL'; }
+      // Show in the persistent status bar for maximum visibility
+      const statusBar = $('derivStatusBar');
+      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ Proposal ['+ec+']: ' + em; setTimeout(()=>{statusBar.style.display='none';},12000); }
+      toast('❌ Proposal [' + ec + ']: ' + em, 'r', 8000);
+      // If auth-related error, reset auth and reconnect
+      if(['InvalidToken','AuthorizationRequired','InvalidAppID','RateLimit'].includes(ec)){
+        authed = false;
+        toast('🔄 Re-authorizing…', 'y', 3000);
+        setTimeout(()=>{ if(ws&&ws.readyState===1&&activeToken) ws.send(JSON.stringify({authorize:activeToken})); else connect(); }, 1500);
+      }
       return;
     }
     const prop=d.proposal;
-    if(!prop||!isBuying)return;
+    // Guard: only process if we are actively waiting for a proposal
+    if(!prop || !isBuying){
+      console.warn('[Deriv] Received proposal but isBuying=false or prop missing. Ignoring.');
+      return;
+    }
+    // Guard: validate that proposal has a valid ID before proceeding to buy
+    if(!prop.id || !prop.ask_price){
+      console.error('[Deriv] Proposal received but missing id or ask_price:', prop);
+      isBuying = false; pendingProposal = null;
+      toast('⚠️ Proposal incomplete — missing ID or price. Cannot buy.', 'r', 6000);
+      const aiStatusEl = $('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal incomplete: missing ID';
+      return;
+    }
+    // Guard: validate barriers are present
+    if(!prop.barrier || !prop.low_barrier){
+      console.error('[Deriv] Proposal missing barriers:', prop);
+      isBuying = false; pendingProposal = null;
+      toast('⚠️ Proposal has no barriers — check symbol/growth_rate', 'r', 6000);
+      return;
+    }
     pendingProposal=prop;
+    console.log('[Deriv] Proposal received ✔️:', {
+      id: prop.id,
+      ask_price: prop.ask_price,
+      barrier: prop.barrier,
+      low_barrier: prop.low_barrier,
+      spot: prop.spot
+    });
     
     // ONLY NOW we create the contract object because the server confirmed the parameters
     con = {
@@ -1197,22 +1284,57 @@ function handle(d){
     
     ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
     
-    // Execute the actual buy using the proposal id
-    send({buy:prop.id,price:prop.ask_price});
+    // STEP 2: Execute the actual buy ONLY after valid proposal ID is confirmed
+    const buyPrice = parseFloat(prop.ask_price);
+    console.log('[Deriv] Sending buy command:', {buy: prop.id, price: buyPrice});
+    send({buy: prop.id, price: buyPrice});
     return;
   }
   if(t==='buy'){
     isBuying=false;pendingProposal=null;proposalReqId=null;
+    // Clear the proposal safety timeout since we got a response
+    if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
     if(d.error){
-      const ec=d.error.code||'',em=d.error.message||'';
+      const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown buy error';
+      console.error('[Deriv] Buy FAILED:', {code: ec, message: em, account: activeLoginid, raw: d.error});
+      // Always show buy errors in the AI status div
+      const aiStatusEl = $('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Buy failed: ' + em;
+      const sigTxtEl = $('sigTxt');
+      if(sigTxtEl){ sigTxtEl.className = 'sig-txt WAIT'; sigTxtEl.textContent = 'BUY FAILED'; }
+      // Show in the persistent status bar for maximum visibility
+      const statusBar = $('derivStatusBar');
+      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ Buy ['+ec+']: ' + em; setTimeout(()=>{statusBar.style.display='none';},12000); }
       if(ec==='TooManyOpenPositions'||em.toLowerCase().includes('too many')){
-        toast('Clearing open position…','y',4000);con=null;clearBarriers();renderNoContract();aiCool=true;
-        send({portfolio:1,contract_type:['ACCU']});setTimeout(()=>{aiCool=false;isBuying=false;},8000);
-      }else{toast('Buy error: '+em,'r',5000);con=null;clearBarriers();renderNoContract();}
+        toast('⚠️ Too many open positions — clearing…','y',5000);
+        con=null;clearBarriers();renderNoContract();aiCool=true;
+        send({portfolio:1,contract_type:['ACCU']});
+        setTimeout(()=>{aiCool=false;isBuying=false;},8000);
+      }else if(ec==='InsufficientBalance'||em.toLowerCase().includes('insufficient')){
+        toast('❌ Insufficient balance — reduce stake or top up account','r',8000);
+        con=null;clearBarriers();renderNoContract();
+        if(aiStatusEl) aiStatusEl.textContent = '❌ Insufficient balance — reduce stake';
+      }else if(ec==='InvalidToken'||ec==='AuthorizationRequired'){
+        toast('❌ Invalid token — please re-login','r',8000);
+        authed=false;con=null;clearBarriers();renderNoContract();
+        setTimeout(()=>showLogin(),2000);
+      }else{
+        toast('❌ Buy error ['+ec+']: '+em,'r',6000);
+        con=null;clearBarriers();renderNoContract();
+      }
       return;
     }
     const bd=d.buy;
     if(bd){
+      console.log('[Deriv] Buy confirmed ✔️:', {
+        contract_id: bd.contract_id,
+        buy_price: bd.buy_price,
+        balance_after: bd.balance_after,
+        start_time: bd.start_time
+      });
+      // Update AI status to show trade is live
+      const aiStatusEl = $('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent = '✅ Trade live on Deriv · ID:' + bd.contract_id;
       // If for some reason con was cleared, re-create it from buy data
       if(!con){
         con = {
@@ -1261,15 +1383,21 @@ function handle(d){
   if(t==='sell'){
     isBuying=false;
     if(d.error){
-      const ec=d.error.code||'';
+      const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown sell error';
+      console.error('[Deriv] Sell error:', {code: ec, message: em, raw: d.error});
+      const aiStatusEl = $('sigSub');
       if(['InvalidSellContractProposal','AlreadySold','ContractAlreadySold'].includes(ec)){
+        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Contract already sold/settled';
         if(con){
           if(con.byAI){aiLoss++;aiTrades++;aiPnl-=con.stake;addHistItem({won:false,pnl:-con.stake,reason:'KO',ticks:con.ticks});}
           con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
         }
         // Refresh balance after error-sell
         setTimeout(()=>send({balance:1}),1000);
-      }else toast('Sell error: '+(d.error.message||''),'y',4000);
+      }else{
+        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Sell error: ' + em;
+        toast('⚠️ Sell error ['+ec+']: '+em,'r',5000);
+      }
       return;
     }
     toast('Sold — awaiting Deriv settlement…','g',2000);
@@ -1977,7 +2105,15 @@ function runAI(price){
   $('ovSig').textContent=sig;$('ovSig').style.color=sig==='BUY'||sig==='IN TRADE'?'var(--green)':'var(--gold)';
   $('sbAI').textContent='AI:'+aiTrades+'t';$('sbAI').style.color=aiOn?'var(--green)':'var(--sub)';
 
-  if(sig==='BUY'&&!con&&!aiCool&&!isBuying)doEntry(price,entryScore);
+  // SESSION SYNC: Only attempt entry if fully authorized on Deriv server
+  if(sig==='BUY'&&!con&&!aiCool&&!isBuying){
+    if(!authed || !activeToken || activeToken.length < 10){
+      // Not yet authorized — wait silently, do not attempt trade
+      if($('sigSub')) $('sigSub').textContent = '⏳ Waiting for Deriv auth…';
+    } else {
+      doEntry(price,entryScore);
+    }
+  }
   // Scan vol every 15s when no trade
   if(now()-lastVolSwitch>15000&&!con)doVolScanAndSwitch(true);
 }
@@ -2011,52 +2147,93 @@ function sniperExit(price,bp,reason){
 // BUY CONTRACT — Proper Deriv API flow: proposal → buy
 // ═══════════════════════════════════════════
 function buyContract(fromAI){
-    if(!wsAlive){toast('Not connected','r');return;}
-    if(!authed || !activeToken){toast('⚠️ Please login to your Deriv account first','y',5000);showLogin();return;}
+    // ── PRE-FLIGHT CHECKS ──
+    if(!wsAlive || !ws || ws.readyState !== 1){
+      toast('⚠️ WebSocket not connected — reconnecting…', 'r', 4000);
+      reconnDelay = 800; connect(); return;
+    }
+    // SESSION SYNC: Ensure authorization is fully confirmed before requesting a proposal
+    if(!authed || !activeToken || activeToken.length < 10){
+      toast('⚠️ Not authorized — please login to your Deriv account first', 'y', 5000);
+      showLogin(); return;
+    }
     if(con){toast('Already in trade','r');return;}
     if(!prevP){toast('No price yet — wait for tick data','y');return;}
     if(isBuying){toast('Trade pending…','y');return;}
 
     window._lastEntryFromAI = !!fromAI;
     const currentStake = parseFloat($('stkInput').value) || stake;
-    const isVirtual = accountList.find(a=>a.loginid===activeLoginid);
-    const acctType = (isVirtual && isVirtual.is_virtual) ? 'DEMO' : 'REAL';
+    if(!currentStake || currentStake <= 0){
+      toast('⚠️ Invalid stake amount', 'r', 4000); return;
+    }
+    // Ensure currency is set (fallback to USD if not yet received from authorize)
+    const tradeCurrency = userCurrency || 'USD';
+    const acctInfo = accountList.find(a => a.loginid === activeLoginid);
+    const acctType = (acctInfo && acctInfo.is_virtual) ? 'DEMO' : 'REAL';
 
     isBuying = true;
+    pendingProposal = null;
+    // Assign a unique req_id for this proposal so we can match the response
+    proposalReqCounter++;
+    const thisReqId = proposalReqCounter;
+    proposalReqId = thisReqId;
+
     const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
     toast(label + ' [' + acctType + '] Requesting proposal…', 'p', 2000);
+
+    // Full proposal payload with ALL required fields for ACCU contracts
+    const proposalPayload = {
+      proposal: 1,
+      req_id: thisReqId,          // track this specific request
+      contract_type: 'ACCU',      // accumulator contract type
+      symbol: sym,                 // e.g. R_10, 1HZ10V
+      amount: currentStake,        // stake amount (number)
+      basis: 'stake',              // basis must be 'stake' for ACCU
+      growth_rate: gr / 100,       // e.g. 2% → 0.02 (required for ACCU)
+      currency: tradeCurrency,     // e.g. 'USD'
+      subscribe: 1                 // subscribe to proposal updates
+    };
+
     console.log('[Deriv] Sending proposal request:', {
-      symbol: sym,
-      amount: currentStake,
-      growth_rate: gr/100,
-      currency: userCurrency,
+      ...proposalPayload,
       account: activeLoginid,
       is_virtual: acctType === 'DEMO',
       authed: authed,
       token_len: activeToken ? activeToken.length : 0
     });
 
-    // STEP 1: Request a proposal from Deriv to get real barriers and price
-    send({
-      proposal: 1,
-      contract_type: 'ACCU',
-      symbol: sym,
-      amount: currentStake,
-      basis: 'stake',
-      growth_rate: gr / 100,
-      currency: userCurrency
-    });
+    // Update AI status to show we are waiting for proposal
+    const aiStatusEl = $('sigSub');
+    if(aiStatusEl) aiStatusEl.textContent = '⏳ Waiting for Deriv proposal…';
 
-    // Safety timeout: cancel if no response within 30 seconds
-    setTimeout(() => {
-      if(isBuying && (!con || !con.realId)){
-        isBuying = false; pendingProposal = null;
+    // STEP 1: Request a proposal from Deriv to get real barriers and price
+    const sent = send(proposalPayload);
+    if(!sent){
+      isBuying = false; proposalReqId = null;
+      toast('❌ Failed to send proposal — WebSocket not ready', 'r', 5000);
+      return;
+    }
+
+    // Safety timeout: cancel if no response within 15 seconds
+    const safetyTimer = setTimeout(() => {
+      if(isBuying && proposalReqId === thisReqId && (!con || !con.realId)){
+        isBuying = false; pendingProposal = null; proposalReqId = null;
         if(con) { con = null; clearBarriers(); renderNoContract(); }
-        console.error('[Deriv] Proposal timeout. Account:', activeLoginid, 'Authed:', authed);
-        toast('Proposal timed out. Reconnecting...', 'r', 5000);
+        console.error('[Deriv] Proposal timeout after 15s.', {
+          account: activeLoginid,
+          authed: authed,
+          symbol: sym,
+          growth_rate: gr / 100,
+          currency: tradeCurrency
+        });
+        const aiStatusEl = $('sigSub');
+        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal timed out — check connection';
+        toast('⚠️ Proposal timed out. Reconnecting…', 'r', 5000);
         setTimeout(() => { reconnDelay = 800; connect(); }, 2000);
       }
-    }, 30000);
+    }, 15000);
+    // Store timer reference so it can be cleared on success
+    window._proposalSafetyTimer = safetyTimer;
   }
 
 // ═══════════════════════════════════════════
