@@ -1007,7 +1007,7 @@ function bootApp(){
   setInterval(()=>{if(con)updateConUI();},800);
   setInterval(()=>$('sbTime').textContent=new Date().toLocaleTimeString(),1000);
   window.addEventListener('online',()=>{toast('🌐 Back online','g');reconnDelay=800;connect();});
-  window.addEventListener('offline',()=>{toast('📵 Offline','r');setDot('err');});
+  window.addEventListener('offline',()=>{toast('😂 Offline','r');setDot('err');});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}});
   document.addEventListener('touchstart',()=>{if(!wsAlive&&appReady){reconnDelay=800;connect();}},{passive:true});
   // Auto vol scan every 12s when AI on and no active trade
