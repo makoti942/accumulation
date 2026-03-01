@@ -882,6 +882,7 @@ let con=null,exitingNow=false,realBalance=null;
 let aiOn=false,aiWins=0,aiLoss=0,aiTrades=0,aiPnl=0;
 let aiCool=false,phase='IDLE',scanAnim=0,exitProbability=0;
 let ticksHeld=0;
+let latestProposal=null,proposalStreamReqId=null;
 // Break history per symbol
 let breakHistory={},volScores={},lastVolSwitch=0;
 let contractsCache={},growthRetry=null,forceExec=true;
@@ -1133,6 +1134,7 @@ function handle(d){
     // Request fresh balance and re-subscribe to balance updates
     send({balance:1,subscribe:1});
     setTimeout(()=>send({balance:1}),500);
+    setTimeout(updateProposalStream,1500);
     const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
     toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
     return;
@@ -1287,6 +1289,26 @@ function handle(d){
       scheduleAlternativeGrowth();
       return;
     }
+    
+    // UPDATE CACHE FOR INSTANT EXECUTION
+    latestProposal = {
+      id: prop.id,
+      ask_price: prop.ask_price,
+      spot: prop.spot,
+      barrier: prop.barrier,
+      low_barrier: prop.low_barrier,
+      sym: sym,
+      gr: gr,
+      ts: now()
+    };
+    
+    // If not actively buying, we are just streaming - update status and exit
+    if(!isBuying){
+      const aiStatusEl=$('sigSub');
+      if(aiStatusEl && aiStatusEl.textContent.includes('Waiting')) aiStatusEl.textContent='Ready for Signal';
+      return;
+    }
+
     pendingProposal=prop;
     console.log('[Deriv] Proposal received ✔️:', {
       id: prop.id,
@@ -2068,6 +2090,7 @@ function switchSym(newSym,newDp){
     send({ticks_history:sym,count:100,end:'latest',style:'ticks'});
     setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},400);
     setTimeout(()=>{requestContractsFor(sym);},200);
+    setTimeout(updateProposalStream,800);
   }
 }
 function requestContractsFor(sSymbol){
@@ -2248,8 +2271,46 @@ function sniperExit(price,bp,reason){
   },400);
 }
 
+function updateProposalStream(){
+  if(!ws||ws.readyState!==1||!authed)return;
+  if(con)return; // Stop streaming when in trade to save bandwidth
+  
+  const currentStake=parseFloat($('stkInput').value)||stake;
+  if(!currentStake||currentStake<=0)return;
+
+  // Validate growth/symbol first
+  const cc=contractsCache[sym];
+  if(cc&&cc.supportsAccu===false)return;
+  const allowed=getAllowedGrowths(sym);
+  if(allowed.indexOf(gr)===-1)return;
+
+  // Cancel old stream if ID changed
+  if(proposalStreamReqId){
+    ws.send(JSON.stringify({forget_all:'proposal'}));
+  }
+  
+  proposalReqCounter++;
+  const thisReqId=proposalReqCounter;
+  proposalStreamReqId=thisReqId;
+  
+  const tradeCurrency = userCurrency || 'USD';
+  const payload = {
+    proposal: 1,
+    req_id: thisReqId,
+    contract_type: 'ACCU',
+    symbol: sym,
+    amount: currentStake,
+    basis: 'stake',
+    growth_rate: parseFloat((gr/100).toFixed(3)),
+    currency: tradeCurrency,
+    subscribe: 1
+  };
+  // Silent send
+  ws.send(JSON.stringify(payload));
+}
+
 // ═══════════════════════════════════════════
-// BUY CONTRACT — Proper Deriv API flow: proposal → buy
+// BUY CONTRACT — Instant execution via Stream
 // ═══════════════════════════════════════════
 function buyContract(fromAI){
     // ── PRE-FLIGHT CHECKS ──
@@ -2275,108 +2336,97 @@ function buyContract(fromAI){
     const validSymbol = ALL_SYMS.find(s => s.sym === sym);
     if(!validSymbol){
       toast('❌ Invalid symbol: ' + sym + ' not in supported list', 'r', 5000);
-      console.error('[Deriv] Invalid symbol for proposal:', sym);
       return;
     }
     // Validate growth rate is in range (1-5%)
     if(gr < 1 || gr > 5){
       toast('❌ Invalid growth rate: ' + gr + '% (must be 1-5%)', 'r', 5000);
-      console.error('[Deriv] Invalid growth rate for proposal:', gr);
       return;
     }
-    const cc=contractsCache[sym];
-    if(cc&&cc.supportsAccu===false){
-      toast('ACCU not supported on '+sym+' — switching market','r',6000);
-      doVolScanAndSwitch(true);
-      return;
+    
+    // Check cache/stream validity
+    const nowTs = now();
+    // Use cached proposal if fresh (<2500ms) and matching current parameters
+    if(latestProposal && (nowTs - latestProposal.ts < 2500) && latestProposal.sym === sym && latestProposal.gr === gr){
+       const prop = latestProposal;
+       isBuying = true;
+       pendingProposal = prop;
+       
+       const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
+       toast(label + ' INSTANT EXECUTION', 'g', 2000);
+       
+       // Create contract object immediately
+       con = {
+          entry: parseFloat(prop.spot),
+          upper: parseFloat(prop.barrier),
+          lower: parseFloat(prop.low_barrier),
+          ticks: 0,
+          stake: parseFloat(prop.ask_price),
+          pnl: 0,
+          payout: parseFloat(prop.ask_price),
+          start: now(),
+          byAI: !!(window._lastEntryFromAI),
+          realId: null,
+          isReal: true
+        };
+        ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
+        
+        // SEND BUY IMMEDIATELY
+        console.log('[Deriv] Instant Buy:', {buy: prop.id, price: prop.ask_price});
+        send({buy: prop.id, price: parseFloat(prop.ask_price)});
+        
+        // Stop streaming proposals while in trade
+        ws.send(JSON.stringify({forget_all:'proposal'}));
+        
+        // Safety timer
+        window._buySafetyTimer = setTimeout(()=>{
+          if(con && !con.realId){
+            logError('Instant Buy Timeout',{symbol:sym});
+            isBuying=false; pendingProposal=null; con=null; clearBarriers(); renderNoContract();
+            toast('⚠️ Instant Buy Timeout — retrying connection', 'y', 5000);
+            reconnDelay=800; connect();
+          }
+        }, 8000); // Short timeout for instant buy
+        return;
     }
-    const allowed=getAllowedGrowths(sym);
-    if(allowed.indexOf(gr)===-1){
-      gr=allowed[0];
-      setGrowthActiveButton();
-      toast('Adjusted growth to '+gr+'% for '+sym,'y',3000);
-      const stEl=$('sysStatus');if(stEl)stEl.textContent='● Auto-Aligned: '+gr+'%';
-    }
-    growthRetry={sym,tried:new Set([gr]),count:0,fromAI:!!fromAI};
-    // Ensure currency is set (fallback to USD if not yet received from authorize)
+    
+    // Fallback to old method if stream is not ready (rare)
+    toast('⚠️ Stream not ready — requesting proposal manually...', 'y', 2000);
+    updateProposalStream(); // Try to restart stream
+    // Optionally wait a bit? No, just let the stream handler pick it up.
+    // But to be safe, let's use the old flow as backup? 
+    // Actually, calling updateProposalStream will trigger a proposal response shortly.
+    // The proposal handler will NOT trigger a buy unless we flag it.
+    // So let's flag it? No, let's just wait for the user to click again or let the AI retry next tick.
+    // Better: Force a one-off request.
     const tradeCurrency = userCurrency || 'USD';
-    const acctInfo = accountList.find(a => a.loginid === activeLoginid);
-    const acctType = (acctInfo && acctInfo.is_virtual) ? 'DEMO' : 'REAL';
-
-    isBuying = true;
-    pendingProposal = null;
-    // Assign a unique req_id for this proposal so we can match the response
     proposalReqCounter++;
     const thisReqId = proposalReqCounter;
     proposalReqId = thisReqId;
-
-    const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
-    toast(label + ' [' + acctType + '] Requesting proposal…', 'p', 2000);
-
-    // Full proposal payload with ALL required fields for ACCU contracts
+    isBuying = true;
+    
     const proposalPayload = {
       proposal: 1,
-      req_id: thisReqId,          // track this specific request
-      contract_type: 'ACCU',      // accumulator contract type
-      symbol: sym,                 // e.g. R_10, 1HZ10V
-      amount: currentStake,        // stake amount (number)
-      basis: 'stake',              // basis must be 'stake' for ACCU
+      req_id: thisReqId,
+      contract_type: 'ACCU',
+      symbol: sym,
+      amount: currentStake,
+      basis: 'stake',
       growth_rate: parseFloat((gr/100).toFixed(3)),
-      currency: tradeCurrency,     // e.g. 'USD'
-      subscribe: 1                 // subscribe to proposal updates
+      currency: tradeCurrency,
+      subscribe: 1
     };
-
-    console.log('[Deriv] Sending proposal request:', {
-      ...proposalPayload,
-      account: activeLoginid,
-      is_virtual: acctType === 'DEMO',
-      authed: authed,
-      token_len: activeToken ? activeToken.length : 0
-    });
-
-    // Update AI status to show we are waiting for proposal
-    const aiStatusEl = $('sigSub');
-    if(aiStatusEl) aiStatusEl.textContent = '⏳ Waiting for Deriv proposal…';
-
-    // CRITICAL: Clean up any stale proposal subscription before requesting a new one
-    // This prevents "AlreadySubscribedToProposal" errors from Deriv
-    if(ws && ws.readyState === 1){
-      ws.send(JSON.stringify({forget_all: 'proposal'}));
-    }
-
-    // STEP 1: Request a proposal from Deriv to get real barriers and price
-    // Small delay to ensure forget_all completes before new proposal
-    setTimeout(() => {
-      if(isBuying && ws && ws.readyState === 1){
-        const sent = send(proposalPayload);
-        if(!sent){
-          isBuying = false; proposalReqId = null;
-          toast('❌ Failed to send proposal — WebSocket not ready', 'r', 5000);
-        }
-      }
-    }, 50);
-
-    // Safety timeout: cancel if no response within 15 seconds
-    const safetyTimer = setTimeout(() => {
+    send(proposalPayload);
+    
+    // Safety timer for fallback
+    window._proposalSafetyTimer = setTimeout(() => {
       if(isBuying && proposalReqId === thisReqId && (!con || !con.realId)){
-        isBuying = false; pendingProposal = null; proposalReqId = null;
-        if(con) { con = null; clearBarriers(); renderNoContract(); }
-        console.error('[Deriv] Proposal timeout after 15s.', {
-          account: activeLoginid,
-          authed: authed,
-          symbol: sym,
-          growth_rate: gr / 100,
-          currency: tradeCurrency
-        });
-        const aiStatusEl = $('sigSub');
-        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal timed out — check connection';
-        toast('⚠️ Proposal timed out. Reconnecting…', 'r', 5000);
-        setTimeout(() => { reconnDelay = 800; connect(); }, 2000);
+         isBuying=false; pendingProposal=null;
+         toast('⚠️ Proposal timeout. Reconnecting…', 'r', 5000);
+         connect();
       }
-    }, 15000);
-    // Store timer reference so it can be cleared on success
-    window._proposalSafetyTimer = safetyTimer;
-  }
+    }, 12000);
+}
 
 // ═══════════════════════════════════════════
 // CLOSE CONTRACT — properly adds profit to balance
@@ -2767,6 +2817,7 @@ function setupEvents(){
     const b=e.target.closest('.gr-btn');if(!b)return;
     document.querySelectorAll('.gr-btn').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');gr=parseInt(b.dataset.r);$('sGrowth').textContent=gr+'%';
+    setTimeout(updateProposalStream,200);
   });
 
   $('stkInput').addEventListener('input',()=>{stake=parseFloat($('stkInput').value)||10;$('stkRange').value=Math.min(stake,1000);});
