@@ -874,6 +874,8 @@ let heartbeatTimer=null,lastMsgTime=0;
 let sym='R_10',dp=3,gr=2,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
+let proposalStreamActive=false,proposalRetryTimer=null,proposalStreamTimer=null;
+let buyPendingAfterStream=false,buyFromAIPending=false;
 let tokenStore={},accountList=[],activeLoginid='';
 let priceHist=[],tickBuf=[],prevP=null;
 let hi=-Infinity,lo=Infinity,symBufs={};
@@ -1006,6 +1008,16 @@ function bootApp(){
   updatePhaseUI();setupMobile();setupEvents();connect();
   setInterval(()=>{if(con)updateConUI();},800);
   setInterval(()=>$('sbTime').textContent=new Date().toLocaleTimeString(),1000);
+  // Keepalive: restart proposal stream if it dies and we're not in a trade
+  setInterval(()=>{
+    if(!con&&!isBuying&&authed&&ws&&ws.readyState===1){
+      const stale=!latestProposal||(now()-latestProposal.ts>30000);
+      if(stale&&!proposalStreamActive){
+        console.log('[Keepalive] Proposal stream stale/dead — restarting.');
+        updateProposalStream();
+      }
+    }
+  },15000);
   window.addEventListener('online',()=>{toast('🌐 Back online','g');reconnDelay=800;connect();});
   window.addEventListener('offline',()=>{toast('😂 Offline','r');setDot('err');});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}});
@@ -1028,9 +1040,14 @@ function connect(){
   ws.onopen=()=>{
     clearTimeout(connTO);wsAlive=true;reconnDelay=800;lastMsgTime=now();
     setDot('on');$('connBanner').classList.remove('show');
-    // Reset any stale buying state from previous connection
-    if(isBuying){ isBuying=false; pendingProposal=null; proposalReqId=null; }
+    // Reset ALL stale buying/proposal state from previous connection
+    isBuying=false; pendingProposal=null; proposalReqId=null;
+    proposalStreamActive=false; buyPendingAfterStream=false; buyFromAIPending=false;
+    latestProposal=null; proposalStreamReqId=null;
     if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
+    if(window._buySafetyTimer){ clearTimeout(window._buySafetyTimer); window._buySafetyTimer=null; }
+    if(proposalRetryTimer){ clearTimeout(proposalRetryTimer); proposalRetryTimer=null; }
+    if(proposalStreamTimer){ clearTimeout(proposalStreamTimer); proposalStreamTimer=null; }
     // Forget all stale subscriptions (ticks, proposals) from previous session
     ws.send(JSON.stringify({forget_all:'proposal'}));
     ws.send(JSON.stringify({forget_all:'ticks'}));
@@ -1134,7 +1151,10 @@ function handle(d){
     // Request fresh balance and re-subscribe to balance updates
     send({balance:1,subscribe:1});
     setTimeout(()=>send({balance:1}),500);
-    setTimeout(updateProposalStream,1500);
+    // Start proposal stream after auth with proper delay to avoid AlreadySubscribed
+    setTimeout(()=>{
+      if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
+    },2000);
     const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
     toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
     return;
@@ -1236,155 +1256,171 @@ function handle(d){
     if(d.error){
       const ec=d.error.code||'UnknownError';
       const em=d.error.message||d.error.code||'Unknown proposal error';
-      // AUTO-RECOVERY: Check for growth/barrier errors first and retry SILENTLY
-      if(ec==='InvalidGrowthRate' || /growth rate/i.test(em) || /barrier/i.test(em) || /not support/i.test(em)){
+      console.warn('[Deriv] Proposal error:',{code:ec,message:em});
+      
+      // Clear proposal safety timer
+      if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+      
+      // AlreadySubscribed: forget_all and re-subscribe after delay
+      if(ec==='AlreadySubscribed'||/already subscribed/i.test(em)){
+        console.warn('[Deriv] AlreadySubscribed — forcing forget_all and restarting stream.');
+        proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
+        if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+        if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+        if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+        const wasBuying=isBuying, wasFromAI=buyFromAIPending;
+        // Reset buying state temporarily
+        isBuying=false; buyPendingAfterStream=false;
+        // Retry after 600ms
+        setTimeout(()=>{
+          if(!con&&authed&&ws&&ws.readyState===1){
+            if(wasBuying){
+              buyContract(wasFromAI);
+            } else {
+              updateProposalStream();
+            }
+          }
+        },600);
+        return;
+      }
+      
+      // Growth/barrier errors — retry with alternative growth silently
+      if(ec==='InvalidGrowthRate'||/growth rate/i.test(em)||/barrier/i.test(em)||/not support/i.test(em)){
         console.warn('[Deriv] Proposal rejected ('+em+') — retrying alternative growth.');
+        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
         requestContractsFor(sym);
         scheduleAlternativeGrowth();
-        return; 
+        return;
       }
-      isBuying=false;pendingProposal=null;proposalReqId=null;
-      logError('[Deriv] Proposal FAILED',{code:ec,message:em,account:activeLoginid,authed,token_len:activeToken?activeToken.length:0,symbol:sym,growth_rate:gr,currency:userCurrency,raw_error:d.error});
-      // Show error in AI status div so it's always visible
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal failed: ' + em;
-      const sigBoxEl = $('sigBox');
-      if(sigBoxEl){ sigBoxEl.className = 'sig-box WAIT'; }
-      const sigTxtEl = $('sigTxt');
-      if(sigTxtEl){ sigTxtEl.className = 'sig-txt WAIT'; sigTxtEl.textContent = 'PROPOSAL FAIL'; }
-      // Show in the persistent status bar for maximum visibility
-      const statusBar = $('derivStatusBar');
-      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ Proposal ['+ec+']: ' + em; setTimeout(()=>{statusBar.style.display='none';},12000); }
-      toast('❌ Proposal [' + ec + ']: ' + em, 'r', 8000);
-      // If auth-related error, reset auth and reconnect
-      if(['InvalidToken','AuthorizationRequired','InvalidAppID','RateLimit'].includes(ec)){
-        authed = false;
-        toast('🔄 Re-authorizing…', 'y', 3000);
-        setTimeout(()=>{ if(ws&&ws.readyState===1&&activeToken) ws.send(JSON.stringify({authorize:activeToken})); else connect(); }, 1500);
-      } else if(ec==='InvalidGrowthRate' || /growth rate/i.test(em) || /barrier/i.test(em) || /not support/i.test(em)){
-        requestContractsFor(sym);
-        scheduleAlternativeGrowth();
+      
+      // Auth errors
+      if(['InvalidToken','AuthorizationRequired','InvalidAppID'].includes(ec)){
+        isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
+        proposalStreamActive=false; authed=false;
+        toast('🔄 Re-authorizing…','y',3000);
+        setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},1500);
+        return;
       }
+      
+      // RateLimit — back off and retry
+      if(ec==='RateLimit'||/rate limit/i.test(em)){
+        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
+        const wasBuying=isBuying, wasFromAI=buyFromAIPending;
+        setTimeout(()=>{
+          if(!con&&authed&&ws&&ws.readyState===1){
+            if(wasBuying) buyContract(wasFromAI); else updateProposalStream();
+          }
+        },3000);
+        toast('⚠️ Rate limit — retrying in 3s…','y',3000);
+        return;
+      }
+      
+      // All other errors
+      isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
+      proposalStreamActive=false; proposalStreamReqId=null;
+      logError('[Deriv] Proposal FAILED',{code:ec,message:em,account:activeLoginid,symbol:sym,growth_rate:gr});
+      const aiStatusEl=$('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent='⚠️ Proposal failed: '+em;
+      const statusBar=$('derivStatusBar');
+      if(statusBar){statusBar.style.display='block';statusBar.textContent='❌ Proposal ['+ec+']: '+em;setTimeout(()=>{statusBar.style.display='none';},12000);}
+      toast('❌ Proposal ['+ec+']: '+em,'r',8000);
+      // Restart stream after error
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
       return;
     }
+    
     const prop=d.proposal;
-    // Guard: only process if we are actively waiting for a proposal
-    if(!prop || !isBuying){
-      console.warn('[Deriv] Received proposal but isBuying=false or prop missing. Ignoring.');
+    if(!prop)return;
+    
+    // Validate proposal has required fields
+    if(!prop.id||!prop.ask_price){
+      console.error('[Deriv] Proposal missing id or ask_price:',prop);
+      if(buyPendingAfterStream){
+        isBuying=false; buyPendingAfterStream=false;
+        toast('⚠️ Proposal incomplete — retrying…','y',3000);
+        setTimeout(()=>{if(!con&&authed)buyContract(buyFromAIPending);},1000);
+      }
       return;
     }
-    // Guard: validate that proposal has a valid ID before proceeding to buy
-    if(!prop.id || !prop.ask_price){
-      console.error('[Deriv] Proposal received but missing id or ask_price:', prop);
-      isBuying = false; pendingProposal = null;
-      toast('⚠️ Proposal incomplete — missing ID or price. Cannot buy.', 'r', 6000);
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Proposal incomplete: missing ID';
-      return;
-    }
-    // Guard: validate barriers are present
-    if(!prop.barrier || !prop.low_barrier){
-      console.warn('[Deriv] Proposal returned without barriers — retrying alternative growth.');
+    
+    // Validate barriers are present
+    if(!prop.barrier||!prop.low_barrier){
+      console.warn('[Deriv] Proposal without barriers — retrying alternative growth.');
+      if(buyPendingAfterStream){isBuying=false;buyPendingAfterStream=false;}
+      proposalStreamActive=false;
       requestContractsFor(sym);
       scheduleAlternativeGrowth();
       return;
     }
     
-    // UPDATE CACHE FOR INSTANT EXECUTION
-    latestProposal = {
-      id: prop.id,
-      ask_price: prop.ask_price,
-      spot: prop.spot,
-      barrier: prop.barrier,
-      low_barrier: prop.low_barrier,
-      sym: sym,
-      gr: gr,
-      ts: now()
+    // ALWAYS update the proposal cache (whether buying or just streaming)
+    latestProposal={
+      id:prop.id,
+      ask_price:prop.ask_price,
+      spot:prop.spot,
+      barrier:prop.barrier,
+      low_barrier:prop.low_barrier,
+      sym:sym,
+      gr:gr,
+      ts:now()
     };
+    console.log('[ProposalStream] Cache updated:',{id:prop.id,ask_price:prop.ask_price,sym,gr});
     
-    // If not actively buying, we are just streaming - update status and exit
-    if(!isBuying){
-      const aiStatusEl=$('sigSub');
-      if(aiStatusEl && aiStatusEl.textContent.includes('Waiting')) aiStatusEl.textContent='Ready for Signal';
+    // Clear proposal safety timer since we got a valid response
+    if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+    
+    // If a buy is pending on this stream, execute it now
+    if(buyPendingAfterStream&&isBuying){
+      console.log('[ProposalStream] Buy pending — executing now.');
+      const capturedFromAI=buyFromAIPending;
+      buyPendingAfterStream=false;
+      buyFromAIPending=false;
+      _executeBuyFromProposal(latestProposal, capturedFromAI);
       return;
     }
-
-    pendingProposal=prop;
-    console.log('[Deriv] Proposal received ✔️:', {
-      id: prop.id,
-      ask_price: prop.ask_price,
-      barrier: prop.barrier,
-      low_barrier: prop.low_barrier,
-      spot: prop.spot
-    });
     
-    // ONLY NOW we create the contract object because the server confirmed the parameters
-    con = {
-      entry: parseFloat(prop.spot),
-      upper: parseFloat(prop.barrier),
-      lower: parseFloat(prop.low_barrier),
-      ticks: 0,
-      stake: parseFloat(prop.ask_price),
-      pnl: 0,
-      payout: parseFloat(prop.ask_price),
-      start: now(),
-      byAI: !!(window._lastEntryFromAI),
-      realId: null,
-      isReal: true
-    };
-    
-    ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
-    
-    // STEP 2: Execute the actual buy ONLY after valid proposal ID is confirmed
-    const buyPrice = parseFloat(prop.ask_price);
-    console.log('[Deriv] Sending buy command:', {buy: prop.id, price: buyPrice});
-    send({buy: prop.id, price: buyPrice});
-    try{ if(window._buySafetyTimer){ clearTimeout(window._buySafetyTimer); } }catch(e){}
-    window._buySafetyTimer = setTimeout(()=>{
-      try{
-        if(con && !con.realId){
-          logError('Buy timeout',{symbol:sym,gr,account:activeLoginid});
-          isBuying=false; pendingProposal=null; proposalReqId=null;
-          con=null; clearBarriers(); renderNoContract();
-          toast('⚠️ Buy timeout — retrying connection', 'y', 5000);
-          setTimeout(()=>{reconnDelay=800;connect();},800);
-        }
-      }catch(_){}
-    },12000);
+    // Just streaming — update status indicator
+    const aiStatusEl=$('sigSub');
+    if(aiStatusEl&&!con&&!isBuying) aiStatusEl.textContent='⚡ Stream ready — '+prop.ask_price+' '+userCurrency;
     return;
   }
   if(t==='buy'){
-    isBuying=false;pendingProposal=null;proposalReqId=null;
-    // Clear the proposal safety timeout since we got a response
-    if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
-    if(window._buySafetyTimer){ try{ clearTimeout(window._buySafetyTimer); window._buySafetyTimer=null; }catch(e){} }
+    isBuying=false; pendingProposal=null; proposalReqId=null;
+    buyPendingAfterStream=false; buyFromAIPending=false;
+    // Clear all safety timers
+    if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+    if(window._buySafetyTimer){try{clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}catch(e){}}
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown buy error';
-      console.error('[Deriv] Buy FAILED:', {code: ec, message: em, account: activeLoginid, raw: d.error});
-      // Always show buy errors in the AI status div
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Buy failed: ' + em;
-      const sigTxtEl = $('sigTxt');
-      if(sigTxtEl){ sigTxtEl.className = 'sig-txt WAIT'; sigTxtEl.textContent = 'BUY FAILED'; }
-      // Show in the persistent status bar for maximum visibility
-      const statusBar = $('derivStatusBar');
-      if(statusBar){ statusBar.style.display='block'; statusBar.textContent = '❌ Buy ['+ec+']: ' + em; setTimeout(()=>{statusBar.style.display='none';},12000); }
+      console.error('[Deriv] Buy FAILED:',{code:ec,message:em,account:activeLoginid});
+      const aiStatusEl=$('sigSub');
+      if(aiStatusEl) aiStatusEl.textContent='⚠️ Buy failed: '+em;
+      const sigTxtEl=$('sigTxt');
+      if(sigTxtEl){sigTxtEl.className='sig-txt WAIT';sigTxtEl.textContent='BUY FAILED';}
+      const statusBar=$('derivStatusBar');
+      if(statusBar){statusBar.style.display='block';statusBar.textContent='❌ Buy ['+ec+']: '+em;setTimeout(()=>{statusBar.style.display='none';},12000);}
+      con=null; clearBarriers(); renderNoContract();
       if(ec==='TooManyOpenPositions'||em.toLowerCase().includes('too many')){
         toast('⚠️ Too many open positions — clearing…','y',5000);
-        con=null;clearBarriers();renderNoContract();aiCool=true;
+        aiCool=true;
         send({portfolio:1,contract_type:['ACCU']});
-        setTimeout(()=>{aiCool=false;isBuying=false;},8000);
+        setTimeout(()=>{aiCool=false;updateProposalStream();},8000);
       }else if(ec==='InsufficientBalance'||em.toLowerCase().includes('insufficient')){
         toast('❌ Insufficient balance — reduce stake or top up account','r',8000);
-        con=null;clearBarriers();renderNoContract();
-        if(aiStatusEl) aiStatusEl.textContent = '❌ Insufficient balance — reduce stake';
+        if(aiStatusEl) aiStatusEl.textContent='❌ Insufficient balance — reduce stake';
       }else if(ec==='InvalidToken'||ec==='AuthorizationRequired'){
         toast('❌ Invalid token — please re-login','r',8000);
-        authed=false;con=null;clearBarriers();renderNoContract();
+        authed=false;
         setTimeout(()=>showLogin(),2000);
+      }else if(ec==='ContractBuyValidationError'||/expired/i.test(em)||/invalid/i.test(em)){
+        // Proposal expired or invalid — clear cache and restart stream
+        latestProposal=null;
+        toast('⚠️ Proposal expired — refreshing…','y',3000);
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},500);
       }else{
         toast('❌ Buy error ['+ec+']: '+em,'r',6000);
-        con=null;clearBarriers();renderNoContract();
+        // Restart stream after any other buy error
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
       }
       return;
     }
@@ -1466,8 +1502,10 @@ function handle(d){
     }
     toast('Sold — awaiting Deriv settlement…','g',2000);
     // Refresh balance after successful sell
-    setTimeout(()=>send({balance:1}),1500);
-    setTimeout(()=>send({balance:1}),4000);
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},4000);
+    // Restart proposal stream after sell (contract will close via proposal_open_contract)
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2500);
     return;
   }
 }
@@ -1570,6 +1608,8 @@ function switchAccount(loginid){
     return;
   }
   if(con)closeContract('Account switch',false);
+  // Stop proposal stream before account switch
+  stopProposalStream();
   // Clear all session state for fresh authorization
   activeToken=tok;
   activeLoginid=loginid;
@@ -1577,7 +1617,10 @@ function switchAccount(loginid){
   realBalance=null;
   userCurrency='USD';
   isBuying=false;
+  buyPendingAfterStream=false;
+  buyFromAIPending=false;
   pendingProposal=null;
+  latestProposal=null;
   window._authRetried=false;
   console.log('[Account Switch] Switching to',loginid);
   lsSet('deriv_active',loginid);
@@ -1593,7 +1636,12 @@ function switchAccount(loginid){
 function logout(){
   lsDel('deriv_active');lsDel('deriv_ts');
   try{localStorage.clear();}catch(e){}
+  // Stop all proposal streams and timers first
+  stopProposalStream();
+  if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+  if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
   tokenStore={};activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];activeLoginid='';window._authRetried=false;
+  isBuying=false;buyPendingAfterStream=false;buyFromAIPending=false;pendingProposal=null;latestProposal=null;
   if(con)closeContract('Logout',false);
   clearTimeout(reconnTimer);clearTimeout(connTO);clearInterval(pingTimer);clearInterval(heartbeatTimer);
   if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}}
@@ -2084,13 +2132,18 @@ function switchSym(newSym,newDp){
   tickBuf=[];priceHist=[];prevP=null;hi=-Infinity;lo=Infinity;
   $('tickFeed').innerHTML='';$('sbSym').textContent=sym;
   updatePatternUI(sym);
+  // Stop any active proposal stream for old symbol
+  stopProposalStream();
+  // Reset buying state on symbol switch
+  if(!con){isBuying=false;buyPendingAfterStream=false;}
   if(ws&&ws.readyState===1){
     ws.send(JSON.stringify({forget_all:'ticks'}));
     // Request 100 historical ticks immediately
     send({ticks_history:sym,count:100,end:'latest',style:'ticks'});
     setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},400);
     setTimeout(()=>{requestContractsFor(sym);},200);
-    setTimeout(updateProposalStream,800);
+    // Start fresh proposal stream for new symbol after delay
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},900);
   }
 }
 function requestContractsFor(sSymbol){
@@ -2271,6 +2324,18 @@ function sniperExit(price,bp,reason){
   },400);
 }
 
+function stopProposalStream(){
+  // Always forget all proposals before starting a new one to prevent AlreadySubscribed
+  proposalStreamActive=false;
+  proposalStreamReqId=null;
+  latestProposal=null;
+  if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+  if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+  if(ws&&ws.readyState===1){
+    ws.send(JSON.stringify({forget_all:'proposal'}));
+  }
+}
+
 function updateProposalStream(){
   if(!ws||ws.readyState!==1||!authed)return;
   if(con)return; // Stop streaming when in trade to save bandwidth
@@ -2284,29 +2349,44 @@ function updateProposalStream(){
   const allowed=getAllowedGrowths(sym);
   if(allowed.indexOf(gr)===-1)return;
 
-  // Cancel old stream if ID changed
-  if(proposalStreamReqId){
-    ws.send(JSON.stringify({forget_all:'proposal'}));
-  }
+  // CRITICAL: Always forget_all first, then wait before subscribing
+  // This prevents the AlreadySubscribed error
+  proposalStreamActive=false;
+  proposalStreamReqId=null;
+  latestProposal=null;
+  if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+  if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
   
-  proposalReqCounter++;
-  const thisReqId=proposalReqCounter;
-  proposalStreamReqId=thisReqId;
+  ws.send(JSON.stringify({forget_all:'proposal'}));
   
-  const tradeCurrency = userCurrency || 'USD';
-  const payload = {
-    proposal: 1,
-    req_id: thisReqId,
-    contract_type: 'ACCU',
-    symbol: sym,
-    amount: currentStake,
-    basis: 'stake',
-    growth_rate: parseFloat((gr/100).toFixed(3)),
-    currency: tradeCurrency,
-    subscribe: 1
-  };
-  // Silent send
-  ws.send(JSON.stringify(payload));
+  // Wait 300ms after forget_all before subscribing to ensure server processes it
+  proposalStreamTimer=setTimeout(()=>{
+    if(!ws||ws.readyState!==1||!authed||con)return;
+    proposalReqCounter++;
+    const thisReqId=proposalReqCounter;
+    proposalStreamReqId=thisReqId;
+    proposalStreamActive=true;
+    
+    const tradeCurrency=userCurrency||'USD';
+    const payload={
+      proposal:1,
+      req_id:thisReqId,
+      contract_type:'ACCU',
+      symbol:sym,
+      amount:parseFloat($('stkInput').value)||stake,
+      basis:'stake',
+      growth_rate:parseFloat((gr/100).toFixed(3)),
+      currency:tradeCurrency,
+      subscribe:1
+    };
+    console.log('[ProposalStream] Subscribing:',{sym,gr,reqId:thisReqId});
+    ws.send(JSON.stringify(payload));
+    
+    // Schedule periodic refresh of the stream every 25s to keep it alive
+    proposalRetryTimer=setTimeout(()=>{
+      if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
+    },25000);
+  },300);
 }
 
 // ═══════════════════════════════════════════
@@ -2316,116 +2396,146 @@ function buyContract(fromAI){
     // ── PRE-FLIGHT CHECKS ──
     if(!wsAlive || !ws || ws.readyState !== 1){
       toast('⚠️ WebSocket not connected — reconnecting…', 'r', 4000);
-      reconnDelay = 800; connect(); return;
+      reconnDelay=800; connect(); return;
     }
-    // SESSION SYNC: Ensure authorization is fully confirmed before requesting a proposal
     if(!authed || !activeToken || activeToken.length < 10){
       toast('⚠️ Not authorized — please login to your Deriv account first', 'y', 5000);
       showLogin(); return;
     }
     if(con){toast('Already in trade','r');return;}
     if(!prevP){toast('No price yet — wait for tick data','y');return;}
-    if(isBuying){toast('Trade pending…','y');return;}
-
-    window._lastEntryFromAI = !!fromAI;
-    const currentStake = parseFloat($('stkInput').value) || stake;
-    if(!currentStake || currentStake <= 0){
-      toast('⚠️ Invalid stake amount', 'r', 4000); return;
-    }
-        // Validate symbol is in the allowed list
-    const validSymbol = ALL_SYMS.find(s => s.sym === sym);
-    if(!validSymbol){
-      toast('❌ Invalid symbol: ' + sym + ' not in supported list', 'r', 5000);
-      return;
-    }
-    // Validate growth rate is in range (1-5%)
-    if(gr < 1 || gr > 5){
-      toast('❌ Invalid growth rate: ' + gr + '% (must be 1-5%)', 'r', 5000);
-      return;
-    }
-    
-    // Check cache/stream validity
-    const nowTs = now();
-    // Use cached proposal if fresh (<2500ms) and matching current parameters
-    if(latestProposal && (nowTs - latestProposal.ts < 2500) && latestProposal.sym === sym && latestProposal.gr === gr){
-       const prop = latestProposal;
-       isBuying = true;
-       pendingProposal = prop;
-       
-       const label = fromAI ? '🤖 AI Sniper' : '🚀 Manual';
-       toast(label + ' INSTANT EXECUTION', 'g', 2000);
-       
-       // Create contract object immediately
-       con = {
-          entry: parseFloat(prop.spot),
-          upper: parseFloat(prop.barrier),
-          lower: parseFloat(prop.low_barrier),
-          ticks: 0,
-          stake: parseFloat(prop.ask_price),
-          pnl: 0,
-          payout: parseFloat(prop.ask_price),
-          start: now(),
-          byAI: !!(window._lastEntryFromAI),
-          realId: null,
-          isReal: true
-        };
-        ticksHeld = 0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
-        
-        // SEND BUY IMMEDIATELY
-        console.log('[Deriv] Instant Buy:', {buy: prop.id, price: prop.ask_price});
-        send({buy: prop.id, price: parseFloat(prop.ask_price)});
-        
-        // Stop streaming proposals while in trade
-        ws.send(JSON.stringify({forget_all:'proposal'}));
-        
-        // Safety timer
-        window._buySafetyTimer = setTimeout(()=>{
-          if(con && !con.realId){
-            logError('Instant Buy Timeout',{symbol:sym});
-            isBuying=false; pendingProposal=null; con=null; clearBarriers(); renderNoContract();
-            toast('⚠️ Instant Buy Timeout — retrying connection', 'y', 5000);
-            reconnDelay=800; connect();
-          }
-        }, 8000); // Short timeout for instant buy
-        return;
-    }
-    
-    // Fallback to old method if stream is not ready (rare)
-    toast('⚠️ Stream not ready — requesting proposal manually...', 'y', 2000);
-    updateProposalStream(); // Try to restart stream
-    // Optionally wait a bit? No, just let the stream handler pick it up.
-    // But to be safe, let's use the old flow as backup? 
-    // Actually, calling updateProposalStream will trigger a proposal response shortly.
-    // The proposal handler will NOT trigger a buy unless we flag it.
-    // So let's flag it? No, let's just wait for the user to click again or let the AI retry next tick.
-    // Better: Force a one-off request.
-    const tradeCurrency = userCurrency || 'USD';
-    proposalReqCounter++;
-    const thisReqId = proposalReqCounter;
-    proposalReqId = thisReqId;
-    isBuying = true;
-    
-    const proposalPayload = {
-      proposal: 1,
-      req_id: thisReqId,
-      contract_type: 'ACCU',
-      symbol: sym,
-      amount: currentStake,
-      basis: 'stake',
-      growth_rate: parseFloat((gr/100).toFixed(3)),
-      currency: tradeCurrency,
-      subscribe: 1
-    };
-    send(proposalPayload);
-    
-    // Safety timer for fallback
-    window._proposalSafetyTimer = setTimeout(() => {
-      if(isBuying && proposalReqId === thisReqId && (!con || !con.realId)){
-         isBuying=false; pendingProposal=null;
-         toast('⚠️ Proposal timeout. Reconnecting…', 'r', 5000);
-         connect();
+    if(isBuying){
+      // isBuying stuck? Check if it's been more than 15s with no result
+      if(window._buyStartTime && (now()-window._buyStartTime)>15000){
+        console.warn('[BuyContract] isBuying stuck >15s, resetting.');
+        isBuying=false; pendingProposal=null; proposalReqId=null;
+        buyPendingAfterStream=false;
+        if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+        if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
+      } else {
+        toast('Trade pending…','y'); return;
       }
-    }, 12000);
+    }
+
+    window._lastEntryFromAI=!!fromAI;
+    window._buyStartTime=now();
+    const currentStake=parseFloat($('stkInput').value)||stake;
+    if(!currentStake||currentStake<=0){
+      toast('⚠️ Invalid stake amount','r',4000); return;
+    }
+    const validSymbol=ALL_SYMS.find(s=>s.sym===sym);
+    if(!validSymbol){
+      toast('❌ Invalid symbol: '+sym+' not in supported list','r',5000); return;
+    }
+    if(gr<1||gr>5){
+      toast('❌ Invalid growth rate: '+gr+'% (must be 1-5%)','r',5000); return;
+    }
+
+    const nowTs=now();
+    // Use cached proposal if fresh (<3000ms) and matching current parameters
+    if(latestProposal && (nowTs-latestProposal.ts<3000) && latestProposal.sym===sym && latestProposal.gr===gr){
+      _executeBuyFromProposal(latestProposal, fromAI);
+      return;
+    }
+
+    // Stream not ready or stale — request a fresh proposal and execute on response
+    console.log('[BuyContract] No fresh proposal cached. Requesting fresh proposal for instant buy.');
+    isBuying=true;
+    buyPendingAfterStream=true;
+    buyFromAIPending=!!fromAI;
+
+    // Stop any existing stream, then request a fresh one-shot proposal
+    if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+    if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+    proposalStreamActive=false;
+    proposalStreamReqId=null;
+
+    // forget_all first, then send fresh proposal after short delay
+    if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+
+    setTimeout(()=>{
+      if(!isBuying||!buyPendingAfterStream)return; // cancelled
+      if(!ws||ws.readyState!==1||!authed){
+        isBuying=false; buyPendingAfterStream=false;
+        toast('⚠️ Connection lost — reconnecting…','r',4000);
+        reconnDelay=800; connect(); return;
+      }
+      proposalReqCounter++;
+      const thisReqId=proposalReqCounter;
+      proposalReqId=thisReqId;
+      proposalStreamReqId=thisReqId;
+      proposalStreamActive=true;
+
+      const tradeCurrency=userCurrency||'USD';
+      const proposalPayload={
+        proposal:1,
+        req_id:thisReqId,
+        contract_type:'ACCU',
+        symbol:sym,
+        amount:currentStake,
+        basis:'stake',
+        growth_rate:parseFloat((gr/100).toFixed(3)),
+        currency:tradeCurrency,
+        subscribe:1
+      };
+      console.log('[BuyContract] Sending fresh proposal request:',{sym,gr,reqId:thisReqId});
+      send(proposalPayload);
+
+      // Safety timer: if no proposal arrives in 10s, reset and reconnect
+      window._proposalSafetyTimer=setTimeout(()=>{
+        if(isBuying&&buyPendingAfterStream&&proposalReqId===thisReqId&&(!con||!con.realId)){
+          console.error('[BuyContract] Proposal timeout after 10s.');
+          isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
+          proposalStreamActive=false; proposalStreamReqId=null;
+          toast('⚠️ Proposal timeout — reconnecting…','r',5000);
+          reconnDelay=800; connect();
+        }
+      },10000);
+    },350);
+}
+
+function _executeBuyFromProposal(prop, fromAI){
+    isBuying=true;
+    buyPendingAfterStream=false;
+    pendingProposal=prop;
+    window._buyStartTime=now();
+
+    const label=fromAI?'🤖 AI Sniper':'🚀 Manual';
+    console.log('[Deriv] Executing buy from proposal:',{id:prop.id,ask_price:prop.ask_price,sym:prop.sym,gr:prop.gr});
+
+    // Create optimistic contract object immediately
+    con={
+      entry:parseFloat(prop.spot),
+      upper:parseFloat(prop.barrier),
+      lower:parseFloat(prop.low_barrier),
+      ticks:0,
+      stake:parseFloat(prop.ask_price),
+      pnl:0,
+      payout:parseFloat(prop.ask_price),
+      start:now(),
+      byAI:!!(window._lastEntryFromAI),
+      realId:null,
+      isReal:true
+    };
+    ticksHeld=0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
+    toast(label+' EXECUTING…','g',2000);
+
+    // Stop proposal stream while in trade
+    stopProposalStream();
+
+    // Send buy command
+    send({buy:prop.id,price:parseFloat(prop.ask_price)});
+
+    // Safety timer: if buy not confirmed in 10s, reset
+    if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);}
+    window._buySafetyTimer=setTimeout(()=>{
+      if(con&&!con.realId){
+        logError('Buy confirmation timeout',{symbol:sym,gr,account:activeLoginid});
+        isBuying=false; pendingProposal=null; con=null; clearBarriers(); renderNoContract();
+        toast('⚠️ Buy not confirmed — reconnecting…','y',5000);
+        reconnDelay=800; connect();
+      }
+    },10000);
 }
 
 // ═══════════════════════════════════════════
@@ -2459,11 +2569,14 @@ function closeContract(reason,fromAI){
     setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 1500);
     setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 4000);
 
-    isBuying = false; con = null; clearBarriers();
-    exitProbability = 0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+    isBuying=false; con=null; clearBarriers();
+    buyPendingAfterStream=false; buyFromAIPending=false;
+    exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
     renderNoContract(); resetBarrierUI();
-    $('sTicks').textContent = '0'; $('sPnl').textContent = '$0.00'; $('sPnl').style.color = 'var(--text)'; $('sPayout').textContent = '$0.00';
-    toast((won ? '✅ WIN +$' + finalProfit.toFixed(2) : '❌ LOSS -$'+stk.toFixed(2)) + ' | ' + reason, won ? 'g' : 'r', 5000);
+    $('sTicks').textContent='0'; $('sPnl').textContent='$0.00'; $('sPnl').style.color='var(--text)'; $('sPayout').textContent='$0.00';
+    toast((won?'✅ WIN +$'+finalProfit.toFixed(2):'❌ LOSS -$'+stk.toFixed(2))+' | '+reason,won?'g':'r',5000);
+    // Restart proposal stream after contract ends
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
   }
 
 // ═══════════════════════════════════════════
@@ -2490,13 +2603,16 @@ function onKO(price){
       send({sell:realId,price:0});
     }
     toast('❌ Barrier hit! -$'+loss.toFixed(2),'r',6000);
-    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 1500);
-    isBuying=false;con=null;clearBarriers();
-    exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
-    renderNoContract();resetBarrierUI();
-    $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
+    isBuying=false; con=null; clearBarriers();
+    buyPendingAfterStream=false; buyFromAIPending=false;
+    exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+    renderNoContract(); resetBarrierUI();
+    $('sTicks').textContent='0'; $('sPnl').textContent='$0.00'; $('sPnl').style.color='var(--text)'; $('sPayout').textContent='$0.00';
     // Force vol scan after KO
     if(aiOn){lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(true),800);}
+    // Restart proposal stream after KO
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1200);
   }
 
 // ═══════════════════════════════════════════
@@ -2817,13 +2933,17 @@ function setupEvents(){
     const b=e.target.closest('.gr-btn');if(!b)return;
     document.querySelectorAll('.gr-btn').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');gr=parseInt(b.dataset.r);$('sGrowth').textContent=gr+'%';
-    setTimeout(updateProposalStream,200);
+    // Restart stream with new growth rate (stop first to prevent AlreadySubscribed)
+    if(!con&&authed&&ws&&ws.readyState===1){
+      latestProposal=null; // Invalidate old cache
+      setTimeout(updateProposalStream,300);
+    }
   });
 
-  $('stkInput').addEventListener('input',()=>{stake=parseFloat($('stkInput').value)||10;$('stkRange').value=Math.min(stake,1000);});
-  $('stkRange').addEventListener('input',()=>{stake=parseInt($('stkRange').value);$('stkInput').value=stake;});
-  $('stkUp').addEventListener('click',()=>{stake=Math.min(50000,stake+1);$('stkInput').value=stake;$('stkRange').value=Math.min(stake,1000);});
-  $('stkDn').addEventListener('click',()=>{stake=Math.max(1,stake-1);$('stkInput').value=stake;$('stkRange').value=stake;});
+  $('stkInput').addEventListener('input',()=>{stake=parseFloat($('stkInput').value)||10;$('stkRange').value=Math.min(stake,1000);latestProposal=null;if(!con&&authed&&ws&&ws.readyState===1)clearTimeout(window._stkDebounce),window._stkDebounce=setTimeout(updateProposalStream,600);});
+  $('stkRange').addEventListener('input',()=>{stake=parseInt($('stkRange').value);$('stkInput').value=stake;latestProposal=null;if(!con&&authed&&ws&&ws.readyState===1)clearTimeout(window._stkDebounce),window._stkDebounce=setTimeout(updateProposalStream,600);});
+  $('stkUp').addEventListener('click',()=>{stake=Math.min(50000,stake+1);$('stkInput').value=stake;$('stkRange').value=Math.min(stake,1000);latestProposal=null;if(!con&&authed&&ws&&ws.readyState===1)clearTimeout(window._stkDebounce),window._stkDebounce=setTimeout(updateProposalStream,600);});
+  $('stkDn').addEventListener('click',()=>{stake=Math.max(1,stake-1);$('stkInput').value=stake;$('stkRange').value=stake;latestProposal=null;if(!con&&authed&&ws&&ws.readyState===1)clearTimeout(window._stkDebounce),window._stkDebounce=setTimeout(updateProposalStream,600);});
 
   $('tpToggle').addEventListener('change',function(){const on=this.checked;$('tpInput').disabled=!on;$('tpInput').style.opacity=on?'1':'.4';tp=on?parseFloat($('tpInput').value):null;});
   $('tpInput').addEventListener('input',()=>{tp=$('tpToggle').checked?parseFloat($('tpInput').value):null;});
