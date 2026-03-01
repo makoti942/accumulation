@@ -875,7 +875,7 @@ let sym='R_10',dp=3,gr=2,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
 let proposalStreamActive=false,proposalRetryTimer=null,proposalStreamTimer=null;
-let buyPendingAfterStream=false,buyFromAIPending=false;
+let buyPendingAfterStream=false,buyFromAIPending=false,growthLock=false;
 let tokenStore={},accountList=[],activeLoginid='';
 let priceHist=[],tickBuf=[],prevP=null;
 let hi=-Infinity,lo=Infinity,symBufs={};
@@ -1012,7 +1012,8 @@ function bootApp(){
   setInterval(()=>{
     if(!con&&!isBuying&&authed&&ws&&ws.readyState===1){
       const stale=!latestProposal||(now()-latestProposal.ts>30000);
-      if(stale&&!proposalStreamActive){
+      // Ensure we have price before restarting stream
+      if(stale&&!proposalStreamActive&&prevP!==null){
         console.log('[Keepalive] Proposal stream stale/dead — restarting.');
         updateProposalStream();
       }
@@ -1043,7 +1044,7 @@ function connect(){
     // Reset ALL stale buying/proposal state from previous connection
     isBuying=false; pendingProposal=null; proposalReqId=null;
     proposalStreamActive=false; buyPendingAfterStream=false; buyFromAIPending=false;
-    latestProposal=null; proposalStreamReqId=null;
+    latestProposal=null; proposalStreamReqId=null; prevP=null; tickBuf=[]; priceHist=[]; hi=-Infinity; lo=-Infinity;
     if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
     if(window._buySafetyTimer){ clearTimeout(window._buySafetyTimer); window._buySafetyTimer=null; }
     if(proposalRetryTimer){ clearTimeout(proposalRetryTimer); proposalRetryTimer=null; }
@@ -1759,9 +1760,15 @@ function analyzeHistoricalBreaks(symKey) {
 function processTick(tick, isHistory){
   const p=parseFloat(tick.quote),t=tick.epoch;
   if(p>hi)hi=p;if(p<lo)lo=p;
-  const chg=prevP!==null?p-prevP:0;
-  const pct=prevP!==null?(chg/prevP)*100:0;
+  
+  // CRITICAL: Update prevP on first tick so buyContract doesn't fail with "No price yet"
+  const isFirstTick = (prevP === null);
+  const chg=isFirstTick?0:p-prevP;
+  const pct=isFirstTick?0:(chg/prevP)*100;
   const up=chg>=0;
+  if(isFirstTick){
+    if(!isHistory) console.log('[Tick] First price received:',p);
+  }
 
   if(!isHistory){
     $('priceEl').textContent=p.toFixed(dp);
@@ -1779,6 +1786,9 @@ function processTick(tick, isHistory){
     try{area.update(pt);}catch(e){}
     appendBarrierPts(t);
   }
+  
+  // Update prevP for next tick calculation
+  prevP=p;
 
   tickBuf.push({p,t,chg,up});
   if(tickBuf.length>TICK_BUF)tickBuf.shift();
@@ -2161,6 +2171,12 @@ function setGrowthActiveButton(){
   $('sGrowth').textContent=gr+'%';
 }
 function scheduleAlternativeGrowth(){
+  if(growthLock){
+    console.warn('[GrowthLock] Alternative growth blocked by user lock.');
+    isBuying=false; buyPendingAfterStream=false;
+    toast('❌ Error: Growth rate '+gr+'% not available on '+sym,'r',5000);
+    return;
+  }
   const allowed=getAllowedGrowths(sym);
   if(!growthRetry||growthRetry.sym!==sym){
     growthRetry={sym,tried:new Set(),triedSymbols:new Set([sym]),count:0,fromAI:!!window._lastEntryFromAI};
@@ -2409,11 +2425,11 @@ function buyContract(fromAI){
       if(window._buyStartTime && (now()-window._buyStartTime)>15000){
         console.warn('[BuyContract] isBuying stuck >15s, resetting.');
         isBuying=false; pendingProposal=null; proposalReqId=null;
-        buyPendingAfterStream=false;
+        buyPendingAfterStream=false; buyFromAIPending=false;
         if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
         if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
       } else {
-        toast('Trade pending…','y'); return;
+        toast('⚠️ Trade pending... please wait','y',3000); return;
       }
     }
 
@@ -2857,7 +2873,17 @@ function processVoiceCmd(text){
     if(symMatch){const sv='R_'+symMatch[1];const sInfo=ALL_SYMS.find(s=>s.sym===sv);if(sInfo){switchSym(sInfo.sym,sInfo.dp);reply=sw?'Nimebadilisha hadi Volatility '+symMatch[1]+'.':'Switched to Volatility '+symMatch[1]+'.';}}
   }else if(/\b(growth|kiwango|rate)\b.*\b([1-5])\b/i.test(t)){
     const m=t.match(/\b([1-5])\b/);
-    if(m){gr=parseInt(m[1]);document.querySelectorAll('.gr-btn').forEach(b=>b.classList.toggle('active',parseInt(b.dataset.r)===gr));$('sGrowth').textContent=gr+'%';reply=sw?'Kiwango '+gr+'%.':'Growth rate '+gr+'%.';}
+    if(m){
+      if(growthLock){ reply=sw?'Kiwango kimefungwa.':'Growth rate is locked.'; }
+      else {
+        gr=parseInt(m[1]);
+        document.querySelectorAll('.gr-btn').forEach(b=>b.classList.toggle('active',parseInt(b.dataset.r)===gr));
+        $('sGrowth').textContent=gr+'%';
+        reply=sw?'Kiwango '+gr+'%.':'Growth rate '+gr+'%.';
+        latestProposal=null;
+        if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
+      }
+    }
   }else if(t.includes('?')){
     if(aiOn&&con)reply=sw?'Biashara ipo. Hatari: '+exitProbability+'%.':'Trade active. Break risk: '+exitProbability+'%.';
     else reply=sw?'Swali zuri! Niulize kingine.':'Good question! Ask me anything about trading.';
@@ -2938,6 +2964,16 @@ function setupEvents(){
       latestProposal=null; // Invalidate old cache
       setTimeout(updateProposalStream,300);
     }
+  });
+  
+  // Growth Lock Toggle
+  $('sGrowth').style.cursor='pointer';
+  $('sGrowth').title='Click to lock/unlock growth rate';
+  $('sGrowth').addEventListener('click',()=>{
+    growthLock=!growthLock;
+    $('sGrowth').parentElement.style.border=growthLock?'1px solid var(--red)':'none';
+    $('sGrowth').parentElement.style.borderRadius='4px';
+    toast(growthLock?'🔒 Growth Rate Locked':'🔓 Growth Rate Unlocked',growthLock?'r':'g');
   });
 
   $('stkInput').addEventListener('input',()=>{stake=parseFloat($('stkInput').value)||10;$('stkRange').value=Math.min(stake,1000);latestProposal=null;if(!con&&authed&&ws&&ws.readyState===1)clearTimeout(window._stkDebounce),window._stkDebounce=setTimeout(updateProposalStream,600);});
