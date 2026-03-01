@@ -1259,31 +1259,25 @@ function handle(d){
       const em=d.error.message||d.error.code||'Unknown proposal error';
       console.warn('[Deriv] Proposal error:',{code:ec,message:em});
       
-      // Clear proposal safety timer
       if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
       
-      // AlreadySubscribed: forget_all and re-subscribe after delay
       if(ec==='AlreadySubscribed'||/already subscribed/i.test(em)){
-        console.warn('[Deriv] AlreadySubscribed — forcing forget_all and restarting stream.');
         proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
         if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
-        if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
-        if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
-        const wasBuying=isBuying, wasFromAI=buyFromAIPending;
-        // Reset buying state temporarily
-        isBuying=false; buyPendingAfterStream=false;
-        // Retry after 600ms
-        setTimeout(()=>{
-          if(!con&&authed&&ws&&ws.readyState===1){
-            if(wasBuying){
-              buyContract(wasFromAI);
-            } else {
-              updateProposalStream();
-            }
-          }
-        },600);
+        ws.send(JSON.stringify({forget_all:'proposal'}));
+        setTimeout(updateProposalStream, 3500);
         return;
       }
+      
+      if(isBuying){
+          isBuying = false;
+          window._buyStartTime = 0;
+          if(ec !== 'InputValidationFailed' && ec !== 'AlreadySubscribed') {
+              toast('❌ Execution Error: ' + em, 'r', 5000);
+          }
+      }
+      return;
+    }
       
       // Growth/barrier errors — retry with alternative growth silently
       if(ec==='InvalidGrowthRate'||/growth rate/i.test(em)||/barrier/i.test(em)||/not support/i.test(em)){
@@ -1655,18 +1649,46 @@ function logout(){
 // ═══════════════════════════════════════════
 // CHART
 // ═══════════════════════════════════════════
-function initChart(){
-  const el=$('chart');
-  if(chart){try{chart.remove();}catch(e){}}
-  chart=LightweightCharts.createChart(el,{
-    layout:{background:{color:'#0a0d12'},textColor:'#7d8fa3'},
-    grid:{vertLines:{color:'#1e273606'},horzLines:{color:'#1e273614'}},
-    crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-    rightPriceScale:{borderColor:'#1e2736',scaleMargins:{top:0.1,bottom:0.1}},
-    timeScale:{borderColor:'#1e2736',timeVisible:true,secondsVisible:true,rightOffset:10},
-    handleScroll:true,handleScale:true
-  });
-  area=chart.addAreaSeries({lineColor:'#00b0ff',topColor:'#00b0ff22',bottomColor:'#00b0ff00',lineWidth:2,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)},lastValueVisible:true,priceLineVisible:true});
+  // ── CHART ──
+  function initChart(){
+    const el=$('chart');
+    if(chart){try{chart.remove();}catch(e){}}
+    chart=LightweightCharts.createChart(el,{
+      layout:{background:{color:'#0a0d12'},textColor:'#d1d4dc'},
+      grid:{vertLines:{visible:false},horzLines:{visible:false}},
+      crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+      rightPriceScale:{
+          borderColor:'transparent',
+          scaleMargins:{top:0.12,bottom:0.12},
+          alignLabels: true,
+          borderVisible: false,
+          autoScale: true
+      },
+      timeScale:{borderColor:'transparent',timeVisible:true,secondsVisible:true,borderVisible:false,rightOffset:8},
+      handleScroll: true,
+      handleScale: true,
+    });
+    area=chart.addAreaSeries({
+      lineColor:'#2962FF',topColor:'rgba(41, 98, 255, 0.28)',
+      bottomColor:'rgba(41, 98, 255, 0.05)',lineWidth:3,
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceFormat: {
+        type: 'price',
+        precision: dp,
+        minMove: Math.pow(10, -dp)
+      }
+    });
+    // Add volume-like histogram for ticks
+    const volumeSeries = chart.addHistogramSeries({
+        color: '#26a69a',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+    });
+    volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+    window.volumeSeries = volumeSeries;
   const ro=new ResizeObserver(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});});
   ro.observe(el);
   setTimeout(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});},100);
@@ -1757,18 +1779,24 @@ function analyzeHistoricalBreaks(symKey) {
 // ═══════════════════════════════════════════
 // TICK PROCESSING
 // ═══════════════════════════════════════════
-function processTick(tick, isHistory){
-  const p=parseFloat(tick.quote),t=tick.epoch;
-  if(p>hi)hi=p;if(p<lo)lo=p;
-  
-  // CRITICAL: Update prevP on first tick so buyContract doesn't fail with "No price yet"
-  const isFirstTick = (prevP === null);
-  const chg=isFirstTick?0:p-prevP;
-  const pct=isFirstTick?0:(chg/prevP)*100;
-  const up=chg>=0;
-  if(isFirstTick){
-    if(!isHistory) console.log('[Tick] First price received:',p);
-  }
+    // ── TICK PROCESSING ──
+    function processTick(tick, isHistory){
+      const p=parseFloat(tick.quote),t=tick.epoch;
+      if(p>hi)hi=p;if(p<lo)lo=p;
+      
+      // Immediate prevP sync to prevent "No price yet"
+      if(prevP === null) {
+          prevP = p;
+          // Trigger a proposal stream update as soon as we have a price
+          if(!con && authed && !proposalStreamActive && !isBuying) {
+              setTimeout(updateProposalStream, 800);
+          }
+          if(!isHistory) console.log('[Tick] SNIPER READY:', p);
+      }
+      
+      const chg=p-prevP;
+      const pct=prevP !== 0 ? (chg/prevP)*100 : 0;
+      const up=chg>=0;
 
   if(!isHistory){
     $('priceEl').textContent=p.toFixed(dp);
@@ -1784,6 +1812,15 @@ function processTick(tick, isHistory){
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
   if(!isHistory){
     try{area.update(pt);}catch(e){}
+    try{
+      if(window.volumeSeries) {
+        window.volumeSeries.update({
+          time: t,
+          value: Math.abs(chg),
+          color: chg >= 0 ? 'rgba(0, 230, 118, 0.5)' : 'rgba(255, 61, 113, 0.5)'
+        });
+      }
+    }catch(e){}
     appendBarrierPts(t);
   }
   
@@ -1856,7 +1893,7 @@ function processTick(tick, isHistory){
     const L2 = (nearBar===con.upper && p > (sma + std*1.8)) || (nearBar===con.lower && p < (sma - std*1.8)) || (atr > prevAtr * 1.2);
 
     // L3: PROACTIVE BREAK RISK — Exit if BP hits 25% (Maximum safety)
-    const L3=bp>=25&&safetyPct<80;
+    const L3=bp>=35&&safetyPct<40;
 
     // L4: INSTITUTIONAL STOP-RUN DETECTION — Sudden volume/momentum burst
     let L4=false;
@@ -1936,7 +1973,6 @@ function processTick(tick, isHistory){
 
   if(!isHistory){
     addTickRow(p,chg,t);
-    prevP=p;
     $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
     if(aiOn&&tickBuf.length>=5)runAI(p);
     updatePatternUI(sym);
@@ -1944,8 +1980,6 @@ function processTick(tick, isHistory){
     prevP=p; // Still update prevP for historical chain
   }
 }
-
-// ═══════════════════════════════════════════
 // BREAK PROBABILITY — pure market analysis, 10 factors
 // CRITICAL: Distance clamp ensures score can ONLY be high near barrier
 // ═══════════════════════════════════════════
@@ -2045,31 +2079,25 @@ function updateExitMeter(bp){
   cw.classList.toggle('danger',bp>=72&&!!con);
 }
 
-// ═══════════════════════════════════════════
-// VOLATILITY SCANNER — all 10 symbols
-// ═══════════════════════════════════════════
-function scoreSymDeep(sSym){
-  const buf=symBufs[sSym]||[];
-  if(buf.length<10)return{score:0,stability:0,momentum:0,longevity:0,breakRisk:0};
-  const m=Math.min(100,buf.length);
-  const prices=buf.slice(-m);
-  const mean=prices.reduce((a,b)=>a+b,0)/m;
-  const std=Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-mean,2),0)/m);
-  const stability=Math.max(0,Math.min(100,100-(std/mean)*100*380));
-  let sameDir=0;
-  for(let i=1;i<m;i++){if((prices[i]>prices[i-1])===(i>=2?prices[i-1]>prices[i-2]:true))sameDir++;}
-  const trendConsistency=Math.round((sameDir/(m-1))*100);
-  const rec=prices.slice(-10).reduce((a,b)=>a+b,0)/10;
-  const old=prices.slice(0,10).reduce((a,b)=>a+b,0)/10;
-  const momentum=Math.max(0,Math.min(100,100-Math.abs((rec-old)/old*100)*20));
-  const hist=breakHistory[sSym]||[];
-  let longevity=55;
-  if(hist.length>=2){const avgBreak=hist.reduce((a,b)=>a+b,0)/hist.length;longevity=Math.min(100,Math.max(0,avgBreak*1.8));}
-  const recentStd=Math.sqrt(prices.slice(-15).reduce((a,b)=>a+Math.pow(b-mean,2),0)/Math.min(15,prices.length));
-  const breakRisk=Math.min(100,Math.round((recentStd/mean)*100*580));
-  const score=Math.min(100,Math.round(stability*0.35+trendConsistency*0.20+momentum*0.20+longevity*0.15+(100-breakRisk)*0.10));
-  return{score,stability:Math.round(stability),momentum:Math.round(momentum),longevity:Math.round(longevity),breakRisk};
-}
+    // ═══════════════════════════════════════════
+    // VOLATILITY SCANNER — all 10 symbols
+    // ═══════════════════════════════════════════
+    function scoreSymDeep(sSym){
+      const buf=symBufs[sSym]||[];
+      if(buf.length<10)return{score:0,stability:0,momentum:0,longevity:0,breakRisk:0};
+      
+      const m=Math.min(100,buf.length);
+      const prices=buf.slice(-m);
+      const mean=prices.reduce((a,b)=>a+b,0)/m;
+      const std=Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-mean,2),0)/m);
+      
+      // Accumulator specific scoring: prioritize low volatility and price stability
+      const volScore = Math.max(0, 100 - (std/mean) * 50000); 
+      const stability = Math.max(0, 100 - (Math.abs(prices[m-1] - prices[0]) / prices[0]) * 10000);
+      
+      const score = Math.round((volScore * 0.7) + (stability * 0.3));
+      return {score, stability: Math.round(stability), momentum: 50, longevity: 50, breakRisk: Math.round(100-volScore)};
+    }
 
 function doVolScanAndSwitch(silent){
   if(!silent)$('scanOverlay').classList.add('open');
@@ -2106,15 +2134,15 @@ function doVolScanAndSwitch(silent){
     renderVolSide(results);
 
     // FAST-QUANTUM PARALLEL SCANNING: Rapidly hop to the best market
-    if(!con && results.length > 0){
+    if(aiOn && !con && results.length > 0){
       const best = results[0];
       const currentScore = volScores[sym] ? volScores[sym].score : 0;
-      // Faster switching (every 2.5s) and lower threshold for hopping
-      if(now() - lastVolSwitch > 2500 && (best.score > currentScore + 8 || currentScore < 70)){
+      // Added aiOn check to prevent unwanted switching when AI is off
+      if(now() - lastVolSwitch > 5000 && (best.score > currentScore + 10)){
         lastVolSwitch = now();
         if(best.sym !== sym){
           switchSym(best.sym, best.dp);
-          toast('⚡ AI JUMP → ' + best.name + ' (' + best.score + '%)', 'p');
+          toast('⚡ AI JUMP → ' + best.name, 'p');
         }
       }
     }
@@ -2225,13 +2253,11 @@ function scheduleAlternativeGrowth(){
   setTimeout(()=>buyContract(growthRetry.fromAI),200);
 }
 
-// ═══════════════════════════════════════════
-// AI ENGINE — fast hunting, smart entry
-// ═══════════════════════════════════════════
-function runAI(price){
-  const buf=tickBuf,n=buf.length;
-  // SCALPING START: Need 5 ticks for micro-trend analysis
-  if(n<5)return;
+    // ═══════════════════════════════════════════
+    // AI ENGINE — fast hunting, smart entry
+    // ═══════════════════════════════════════════
+    function runAI(price){
+      if(con || isBuying || aiCool) return;
   const sh=Math.min(8,n),lg=Math.min(50,n);
   const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
   const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
@@ -2408,18 +2434,48 @@ function updateProposalStream(){
 // ═══════════════════════════════════════════
 // BUY CONTRACT — Instant execution via Stream
 // ═══════════════════════════════════════════
-function buyContract(fromAI){
-    // ── PRE-FLIGHT CHECKS ──
-    if(!wsAlive || !ws || ws.readyState !== 1){
-      toast('⚠️ WebSocket not connected — reconnecting…', 'r', 4000);
-      reconnDelay=800; connect(); return;
-    }
-    if(!authed || !activeToken || activeToken.length < 10){
-      toast('⚠️ Not authorized — please login to your Deriv account first', 'y', 5000);
-      showLogin(); return;
-    }
-    if(con){toast('Already in trade','r');return;}
-    if(!prevP){toast('No price yet — wait for tick data','y');return;}
+    // ── BUY CONTRACT ──
+    function buyContract(fromAI){
+        if(!wsAlive || !ws || ws.readyState !== 1){
+          toast('⚠️ Reconnecting to Deriv…', 'r', 4000);
+          connect(); return;
+        }
+        if(!authed){
+          toast('⚠️ Authorization required', 'y', 5000);
+          showLogin(); return;
+        }
+        if(con){toast('Trade already active','r');return;}
+        
+        // Safety Reset: Prevent stuck "Trade Pending"
+        const bStart = window._buyStartTime || 0;
+        if(isBuying && (now() - bStart > 10000)){
+            isBuying = false;
+            console.log('[Buy] Safety reset for stuck pending state');
+        }
+        if(isBuying){
+            console.log('[Buy] Blocked: isBuying=true'); 
+            return;
+        }
+        window._buyStartTime = now();
+
+        // Check if Accumulator is actually available
+        const cache = contractsCache[sym];
+        if(cache && cache.supportsAccu === false){
+            toast('❌ Accu not available on '+sym, 'r');
+            return;
+        }
+
+        // Ensure we have current contract possibility
+        const allowed = getAllowedGrowths(sym);
+        if(!allowed.includes(gr)){
+          gr = allowed[0] || 3;
+          setGrowthActiveButton();
+        }
+
+        if(!prevP){
+          toast('Waiting for price sync…','y');
+          return;
+        }
     if(isBuying){
       // isBuying stuck? Check if it's been more than 15s with no result
       if(window._buyStartTime && (now()-window._buyStartTime)>15000){
@@ -2467,7 +2523,13 @@ function buyContract(fromAI){
     proposalStreamReqId=null;
 
     // forget_all first, then send fresh proposal after short delay
-    if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+    if(ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({forget_all:'proposal'}));
+      // Debounce and clear state to avoid AlreadySubscribed
+      proposalStreamActive = false;
+      proposalStreamReqId = null;
+      latestProposal = null;
+    }
 
     setTimeout(()=>{
       if(!isBuying||!buyPendingAfterStream)return; // cancelled
@@ -2507,7 +2569,7 @@ function buyContract(fromAI){
           reconnDelay=800; connect();
         }
       },10000);
-    },350);
+    },1000);
 }
 
 function _executeBuyFromProposal(prop, fromAI){
