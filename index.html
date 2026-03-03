@@ -1292,119 +1292,61 @@ function handle(d){
     return;
   }
   if(t==='proposal'){
+    if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
     if(d.error){
-      const ec=d.error.code||'UnknownError';
-      const em=d.error.message||d.error.code||'Unknown proposal error';
-      console.warn('[Deriv] Proposal error:',{code:ec,message:em});
-      
-      if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
-      
-      // Always reset stream state on any error
-      isBuying=false; buyPendingAfterStream=false;
+      const ec=d.error.code||'',em=d.error.message||d.error.code||'Proposal error';
+      console.warn('[Deriv] Proposal error:',ec,em);
+      isBuying=false; buyPendingAfterStream=false; buyFromAIPending=false;
       proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
       if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
       if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
-      
-      if(ec==='AlreadySubscribed'||/already.subscribed/i.test(em)){
-        if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+      if(ec==='AlreadySubscribed'){
+        if(ws&&ws.readyState===1)ws.send(JSON.stringify({forget_all:'proposal'}));
         setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
-        return;
-      }
-      
-      if(ec==='InvalidToken'||ec==='AuthorizationRequired'||ec==='InvalidAppID'){
+      } else if(ec==='InvalidToken'||ec==='AuthorizationRequired'){
         authed=false;
-        toast('🔄 Session expired — re-authorizing…','y',3000);
         setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},1500);
-        return;
-      }
-      
-      if(ec==='RateLimit'||/rate.limit/i.test(em)){
-        toast('⚠️ Rate limit — retrying in 5s…','y',3000);
+      } else if(ec==='RateLimit'){
         setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},5000);
-        return;
+      } else {
+        const sb=$('derivStatusBar');
+        if(sb){sb.style.display='block';sb.textContent='Proposal error: '+em;setTimeout(()=>sb.style.display='none',8000);}
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},3000);
       }
-      
-      // For InvalidGrowthRate — update cache and try the next valid rate ONCE
-      if(ec==='InvalidGrowthRate'||/growth.rate/i.test(em)){
-        console.warn('[Deriv] Growth rate',gr,'rejected for',sym,'— refreshing contracts and retrying');
-        requestContractsFor(sym);
-        setTimeout(()=>{
-          if(!con&&authed&&ws&&ws.readyState===1){
-            // Pick a different growth rate
-            const allowed=getAllowedGrowths(sym).filter(r=>r!==gr);
-            if(allowed.length){gr=allowed[0];setGrowthActiveButton();}
-            updateProposalStream();
-          }
-        },1500);
-        return;
-      }
-      
-      // All other errors — just restart stream after a pause
-      console.warn('[Deriv] Proposal error ['+ec+']:',em,'— restarting stream in 3s');
-      toast('⚠️ ['+ec+'] — restarting…','y',4000);
-      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},3000);
       return;
     }
-    
     const prop=d.proposal;
-    if(!prop)return;
-    
-    // Validate proposal has required fields
-    if(!prop.id||!prop.ask_price){
-      console.error('[Deriv] Proposal missing id or ask_price:',prop);
-      isBuying=false; buyPendingAfterStream=false;
-      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
-      return;
-    }
-    
-    // Deriv accumulator proposals return barriers as:
-    //   current_spot_high_barrier  (upper)
-    //   current_spot_low_barrier   (lower)
-    //   spot                       (current spot price)
-    // Fallback to barrier/low_barrier for compatibility
-    const upperBarrier = prop.current_spot_high_barrier || prop.high_barrier || prop.barrier || null;
-    const lowerBarrier = prop.current_spot_low_barrier  || prop.low_barrier  || null;
-    
-    if(!upperBarrier || !lowerBarrier){
-      // Proposal came back without barriers — this growth rate may not be valid right now
-      // Don't call scheduleAlternativeGrowth — just restart the stream cleanly
-      console.warn('[Deriv] Proposal has no barriers — restarting stream. Raw:',JSON.stringify(prop).slice(0,200));
-      isBuying=false; buyPendingAfterStream=false;
-      proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
-      if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
-      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
-      return;
-    }
-    
-    // Cache the proposal with correct field names
-    latestProposal={
-      id:prop.id,
-      ask_price:parseFloat(prop.ask_price),
-      spot:parseFloat(prop.spot||prop.current_spot||prevP),
-      barrier:parseFloat(upperBarrier),
-      low_barrier:parseFloat(lowerBarrier),
-      sym:sym,
-      gr:gr,
-      ts:now()
-    };
-    console.log('[ProposalStream] ✅ Cached:',{id:prop.id,ask_price:prop.ask_price,upper:upperBarrier,lower:lowerBarrier,sym,gr});
-    
-    // Clear proposal safety timer since we got a valid response
-    if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
-    
-    // If a buy is pending on this stream, execute it now
+    if(!prop||!prop.id||!prop.ask_price) return;
+    const upperBarrier=prop.current_spot_high_barrier||prop.high_barrier||prop.barrier||null;
+    const lowerBarrier=prop.current_spot_low_barrier||prop.low_barrier||null;
+    const spotPrice=parseFloat(prop.spot||prop.current_spot||prevP||0);
+    latestProposal={id:prop.id,ask_price:parseFloat(prop.ask_price),spot:spotPrice,barrier:upperBarrier?parseFloat(upperBarrier):0,low_barrier:lowerBarrier?parseFloat(lowerBarrier):0,sym:sym,gr:gr,ts:now()};
+    // If a buy is pending — verify req_id then fire the buy IMMEDIATELY
     if(buyPendingAfterStream&&isBuying){
-      console.log('[ProposalStream] Buy pending — executing now.');
-      const capturedFromAI=buyFromAIPending;
-      buyPendingAfterStream=false;
-      buyFromAIPending=false;
-      _executeBuyFromProposal(latestProposal, capturedFromAI);
+      // Only act on the proposal response that belongs to OUR buy request.
+      // Background stream ticks have different req_ids — ignore them.
+      const respId=d.req_id||(d.echo_req&&d.echo_req.req_id)||null;
+      if(respId&&proposalReqId&&String(respId)!==String(proposalReqId)){
+        console.log('[Buy] Skipping background stream tick req_id='+respId+', waiting for '+proposalReqId);
+        return;
+      }
+      const fromAI=buyFromAIPending;
+      buyPendingAfterStream=false; buyFromAIPending=false;
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      const isVirtual=acct?!!acct.is_virtual:false;
+      con={entry:spotPrice||prevP,upper:latestProposal.barrier||0,lower:latestProposal.low_barrier||0,ticks:0,stake:parseFloat(prop.ask_price),pnl:0,payout:parseFloat(prop.ask_price),start:now(),byAI:!!fromAI,realId:null,isReal:!isVirtual};
+      ticksHeld=0;
+      if(latestProposal.barrier&&latestProposal.low_barrier)drawBarriers();
+      updateConUI();$('exitMeter').classList.add('on');
+      console.log('[Deriv] *** SENDING BUY TO DERIV ***',{buy:prop.id,price:prop.ask_price,account:activeLoginid,type:isVirtual?'DEMO':'REAL',currency:userCurrency,symbol:sym,gr:gr+'%'});
+      ws.send(JSON.stringify({buy:prop.id,price:parseFloat(prop.ask_price)}));
+      toast((fromAI?'🤖 AI':'🚀')+' — executing trade on Deriv…','g',3000);
+      if(window._buySafetyTimer)clearTimeout(window._buySafetyTimer);
+      window._buySafetyTimer=setTimeout(()=>{if(con&&!con.realId){isBuying=false;pendingProposal=null;con=null;clearBarriers();renderNoContract();toast('⚠️ Deriv did not confirm trade','r',5000);setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},500);}},15000);
       return;
     }
-    
-    // Just streaming — update status indicator
-    const aiStatusEl=$('sigSub');
-    if(aiStatusEl&&!con&&!isBuying) aiStatusEl.textContent='⚡ Stream ready — '+prop.ask_price+' '+userCurrency;
+    const el=$('sigSub');
+    if(el&&!isBuying&&!con)el.textContent='⚡ '+prop.ask_price+' '+userCurrency;
     return;
   }
   if(t==='buy'){
