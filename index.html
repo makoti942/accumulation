@@ -934,23 +934,25 @@ function setDot(s){$('wsDot').className='ws-dot '+(s==='on'?'on':s==='err'?'err'
 // OAUTH
 // ═══════════════════════════════════════════
 function parseOAuthURL(){
-  const p = new URLSearchParams(window.location.search);
-  const found = {};
-  let firstToken = null, firstLoginid = '';
-  for (let i = 1; p.has('acct' + i); i++) {
-    const loginid = p.get('acct' + i);
-    const token = p.get('token' + i);
-    const currency = p.get('cur' + i);
-    if (token && loginid && token.length > 10) {
-      found[loginid] = { token: token, currency: currency || 'USD' };
-      if (!firstToken) {
-        firstToken = token;
-        firstLoginid = loginid;
+    const p = new URLSearchParams(window.location.search);
+    const found = {};
+    let firstToken = null, firstLoginid = '';
+    for (let i = 1; i <= 10; i++) {
+      const loginid = p.get('acct' + i);
+      const token = p.get('token' + i);
+      const currency = p.get('cur' + i) || 'USD';
+      if (token && loginid && token.length > 5) {
+        found[loginid] = { token: token, currency: currency };
+        if (!firstToken) { firstToken = token; firstLoginid = loginid; }
       }
     }
+    if (!firstToken && p.get('token')) {
+      firstToken = p.get('token');
+      firstLoginid = p.get('loginid') || 'unknown';
+      found[firstLoginid] = { token: firstToken, currency: p.get('cur') || 'USD' };
+    }
+    return { tokens: found, first: firstToken, firstLoginid: firstLoginid };
   }
-  return { tokens: found, first: firstToken, firstLoginid: firstLoginid };
-}
 function loadTokenStore(){try{const s=lsGet('deriv_ts');if(s)tokenStore=JSON.parse(s);}catch(e){tokenStore={};}}
 function saveTokenStore(){lsSet('deriv_ts',JSON.stringify(tokenStore));}
 function getStoredToken(loginid){
@@ -967,54 +969,41 @@ function getStoredToken(loginid){
 // ═══════════════════════════════════════════
 (function init(){
     loadTokenStore();
-    const{tokens,first,firstLoginid}=parseOAuthURL();
-    if(first&&firstLoginid){
-      console.log('[Init] OAuth redirect detected. Tokens:', Object.keys(tokens));
-      Object.keys(tokens).forEach(lid=>{
-        tokenStore[lid]={token: tokens[lid].token, currency: tokens[lid].currency || 'USD'};
-      });
+    const { tokens, first, firstLoginid } = parseOAuthURL();
+    if (first && firstLoginid) {
+      for (const lid in tokens) { tokenStore[lid] = tokens[lid]; }
       saveTokenStore();
-      activeToken=first;activeLoginid=firstLoginid;
-      lsSet('deriv_active',firstLoginid);
-      
-      try{
-        const url = new URL(window.location.origin + window.location.pathname);
-        window.history.replaceState({}, '', url.toString());
-      }catch(e){}
-      
+      activeToken = first; activeLoginid = firstLoginid;
+      lsSet('deriv_active', firstLoginid);
       authed = true;
       hideLogin();
-      return; 
+      try {
+        const url = new URL(window.location.origin + window.location.pathname);
+        window.history.replaceState({}, '', url.toString());
+      } catch(e) {}
+      bootApp();
+      return;
     }
-    
-    const storedActive=lsGet('deriv_active')||'';
-    if(storedActive&&storedActive.length>2){
-      const tok=getStoredToken(storedActive);
-      if(tok&&tok.length>10){
-        activeToken=tok;
-        activeLoginid=storedActive;
-        hideLogin();
-        return;
-      }
+    const storedActive = lsGet('deriv_active');
+    if (storedActive && tokenStore[storedActive]) {
+      const entry = tokenStore[storedActive];
+      activeToken = (typeof entry === 'object') ? entry.token : entry;
+      activeLoginid = storedActive;
+      if (activeToken && activeToken.length > 5) { hideLogin(); bootApp(); return; }
     }
-    
-    const keys=Object.keys(tokenStore);
-    if(keys.length > 0){
-      const firstKey = keys[0];
-      const tok = getStoredToken(firstKey);
-      if(tok && tok.length > 10){
-          activeToken = tok;
-          activeLoginid = firstKey;
-          lsSet('deriv_active', firstKey);
-          hideLogin();
-          return;
-      }
+    const keys = Object.keys(tokenStore);
+    if (keys.length > 0) {
+      activeLoginid = keys[0];
+      const entry = tokenStore[activeLoginid];
+      activeToken = (typeof entry === 'object') ? entry.token : entry;
+      lsSet('deriv_active', activeLoginid);
+      hideLogin(); bootApp(); return;
     }
     showLogin();
   })();
 
 function showLogin(){$('loginOverlay').style.display='flex';}
-function hideLogin(){$('loginOverlay').style.display='none';bootApp();}
+function hideLogin(){ const el = document.getElementById('loginOverlay'); if(el) el.style.setProperty('display', 'none', 'important'); bootApp(); }
 
 // demoBtn is now an OAuth link — no click handler needed (handled by href redirect)
 
@@ -1087,39 +1076,21 @@ function send(obj){
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════
 function handle(d){
-    if(!d)return;
-
-    // ── GLOBAL ERROR HANDLER: Catch all Deriv error responses ──
-    if(d.error && !d.msg_type){
-      const ec = d.error.code || 'UnknownError';
-      const em = d.error.message || 'An unknown error occurred';
-      
-      // If we're already trying to authorize, ignore these noisy errors
-      if(window._authInProgress && (ec === 'AuthorizationRequired' || ec === 'InvalidToken')){
+    if(!d) return;
+    if(d.error) {
+      const ec = d.error.code;
+      if(ec === 'AuthorizationRequired' || ec === 'InvalidToken') {
+        if(activeToken && !window._authRetried) {
+          window._authRetried = true;
+          setTimeout(() => { if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize: activeToken})); }, 1000);
+          return;
+        }
+        if(!activeToken) showLogin();
         return;
       }
-
-      if(ec === 'InvalidToken' || ec === 'AuthorizationRequired'){
-        if(activeToken && !window._authRetried) {
-            window._authRetried = true;
-            window._authInProgress = true;
-            setTimeout(() => {
-                if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize:activeToken}));
-            }, 500);
-            return;
-        }
-        authed = false; 
-        if(!activeToken || ec === 'InvalidToken') showLogin();
-        return; 
-      }
-      
-      toast('⚠️ Deriv Error [' + ec + ']: ' + em, 'r', 7000);
-      if(isBuying){ isBuying = false; pendingProposal = null; }
-      return;
     }
-
-    if(!d.msg_type)return;
-    const t=d.msg_type;
+    if(!d.msg_type) return;
+    const t = d.msg_type;
   if(t==='authorize'){
     window._authInProgress = false;
     // Success! Clear retry flag
