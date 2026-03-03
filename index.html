@@ -254,8 +254,8 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 @media(max-width:600px){.chart-meta{display:none;}}
 
 /* CHART */
-.chart-wrap{flex:1;position:relative;overflow:hidden;}
-#chart{width:100%;height:100%;}
+.chart-wrap{flex:1;position:relative;overflow:hidden;min-height:260px;}
+#chart{width:100%;height:100%;min-height:260px;}
 
 /* AI OVERLAY */
 .ai-ov{position:absolute;top:7px;left:7px;background:#0a0d12ee;backdrop-filter:blur(14px);border:1px solid #6d28d966;border-radius:9px;padding:8px 10px;min-width:130px;z-index:6;display:none;max-width:44%;}
@@ -1210,40 +1210,45 @@ function handle(d){
   }
   if(t==='contracts_for'){
     try{
-      // Use the symbol from the request echo, not the current active sym
-      // (they can differ if user switched symbols while the request was in flight)
-      const reqSym = (d.echo_req && d.echo_req.contracts_for) ? d.echo_req.contracts_for : sym;
+      const reqSym=(d.echo_req&&d.echo_req.contracts_for)?d.echo_req.contracts_for:sym;
       const cf=d.contracts_for||{};
       const rows=Array.isArray(cf.available)?cf.available:[];
-      let acc=rows.find(x=>x.contract_type==='ACCU');
-      if(!acc){
+      
+      // Check if ACCU contract type is available for this symbol
+      const accuRow=rows.find(x=>x.contract_type==='ACCU'||x.contract_category==='accumulator');
+      
+      if(!accuRow){
         contractsCache[reqSym]={supportsAccu:false,allowedGrowths:[]};
-        // If the active sym also has no cache yet, mark it too to avoid blocking
-        if(reqSym===sym) console.warn('[ContractsFor] ACCU not listed for',reqSym);
+        console.warn('[ContractsFor]',reqSym,'— ACCU not in available list. Types found:',rows.map(r=>r.contract_type).join(','));
         return;
       }
-      let growths=[];
-      const grf=acc.growth_rate_range||acc.growth_rate||acc.growth||{};
-      if(Array.isArray(grf.options)) growths=grf.options.map(o=>Math.round(parseFloat((o.value??o))*100)).filter(x=>!isNaN(x)&&x>=1&&x<=5);
-      else if(Array.isArray(grf.values)) growths=grf.values.map(v=>Math.round(parseFloat(v)*100)).filter(x=>!isNaN(x)&&x>=1&&x<=5);
-      else if(grf.min!=null&&grf.max!=null){
-        const mn=Math.max(1,Math.round(parseFloat(grf.min)*100)),mx=Math.min(5,Math.round(parseFloat(grf.max)*100));
-        for(let r=mn;r<=mx;r++)growths.push(r);
-      }
-      // Deriv sometimes returns growth as a plain number like 0.01, 0.02 etc
-      if(!growths.length && acc.growth_rate && typeof acc.growth_rate==='number'){
-        const g=Math.round(acc.growth_rate*100);
-        if(g>=1&&g<=5) growths=[g];
-      }
-      if(!growths.length) growths=[1,2,3,4,5];
-      contractsCache[reqSym]={supportsAccu:true,allowedGrowths:[...new Set(growths)]};
-      console.log('[ContractsFor]',reqSym,'allowedGrowths:',contractsCache[reqSym].allowedGrowths);
-      // If this is our active symbol and current gr is not in allowed list, auto-switch gr
-      if(reqSym===sym && !contractsCache[reqSym].allowedGrowths.includes(gr)){
-        gr=contractsCache[reqSym].allowedGrowths[0]||2;
+      
+      // Per Deriv docs: accumulator growth rates are always 1%,2%,3%,4%,5% (0.01-0.05)
+      // Parse them if provided, otherwise use all 5
+      let growths=[1,2,3,4,5];
+      
+      // Try to read from the available row if Deriv provides them
+      try{
+        const gr_range=accuRow.growth_rate_range||accuRow.barrier_choices||null;
+        if(gr_range&&Array.isArray(gr_range)&&gr_range.length){
+          const parsed=gr_range.map(v=>Math.round(parseFloat(v)*100)).filter(x=>x>=1&&x<=5);
+          if(parsed.length) growths=parsed;
+        } else if(accuRow.min_growth_rate&&accuRow.max_growth_rate){
+          const mn=Math.round(parseFloat(accuRow.min_growth_rate)*100);
+          const mx=Math.round(parseFloat(accuRow.max_growth_rate)*100);
+          growths=[];for(let r=Math.max(1,mn);r<=Math.min(5,mx);r++)growths.push(r);
+          if(!growths.length)growths=[1,2,3,4,5];
+        }
+      }catch(parseErr){growths=[1,2,3,4,5];}
+      
+      contractsCache[reqSym]={supportsAccu:true,allowedGrowths:growths};
+      console.log('[ContractsFor] ✅',reqSym,'ACCU confirmed. growths:',growths);
+      
+      // Fix gr if it's not in allowed list for active symbol
+      if(reqSym===sym&&!growths.includes(gr)){
+        gr=growths[0]||2;
         setGrowthActiveButton();
-        // Restart proposal stream with corrected growth rate
-        if(!con&&authed&&ws&&ws.readyState===1) setTimeout(updateProposalStream,300);
+        if(!con&&authed&&ws&&ws.readyState===1)setTimeout(updateProposalStream,200);
       }
     }catch(e){console.error('[ContractsFor] parse error:',e);}
     return;
@@ -1294,64 +1299,50 @@ function handle(d){
       
       if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
       
-      if(ec==='AlreadySubscribed'||/already subscribed/i.test(em)){
-        proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
-        if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
-        ws.send(JSON.stringify({forget_all:'proposal'}));
-        setTimeout(updateProposalStream, 3500);
+      // Always reset stream state on any error
+      isBuying=false; buyPendingAfterStream=false;
+      proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
+      if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+      if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+      
+      if(ec==='AlreadySubscribed'||/already.subscribed/i.test(em)){
+        if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
         return;
       }
       
-      // Growth/barrier errors — retry with alternative growth silently
-      if(ec==='InvalidGrowthRate'||/growth rate/i.test(em)||/barrier/i.test(em)||/not support/i.test(em)){
-        console.warn('[Deriv] Proposal rejected ('+em+') — retrying alternative growth.');
-        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
-        requestContractsFor(sym);
-        scheduleAlternativeGrowth();
-        return;
-      }
-      
-      // Auth errors
-      if(['InvalidToken','AuthorizationRequired','InvalidAppID'].includes(ec)){
-        isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
-        proposalStreamActive=false; authed=false;
-        toast('🔄 Re-authorizing…','y',3000);
+      if(ec==='InvalidToken'||ec==='AuthorizationRequired'||ec==='InvalidAppID'){
+        authed=false;
+        toast('🔄 Session expired — re-authorizing…','y',3000);
         setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},1500);
         return;
       }
       
-      // RateLimit — back off and retry
-      if(ec==='RateLimit'||/rate limit/i.test(em)){
-        const wasBuying=isBuying, wasFromAI=buyFromAIPending;
-        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
-        setTimeout(()=>{
-          if(!con&&authed&&ws&&ws.readyState===1){
-            if(wasBuying) buyContract(wasFromAI); else updateProposalStream();
-          }
-        },3000);
-        toast('⚠️ Rate limit — retrying in 3s…','y',3000);
+      if(ec==='RateLimit'||/rate.limit/i.test(em)){
+        toast('⚠️ Rate limit — retrying in 5s…','y',3000);
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},5000);
         return;
       }
-
-      if(isBuying){
-          isBuying = false;
-          window._buyStartTime = 0;
-          if(ec !== 'InputValidationFailed' && ec !== 'AlreadySubscribed') {
-              toast('❌ Execution Error: ' + em, 'r', 5000);
+      
+      // For InvalidGrowthRate — update cache and try the next valid rate ONCE
+      if(ec==='InvalidGrowthRate'||/growth.rate/i.test(em)){
+        console.warn('[Deriv] Growth rate',gr,'rejected for',sym,'— refreshing contracts and retrying');
+        requestContractsFor(sym);
+        setTimeout(()=>{
+          if(!con&&authed&&ws&&ws.readyState===1){
+            // Pick a different growth rate
+            const allowed=getAllowedGrowths(sym).filter(r=>r!==gr);
+            if(allowed.length){gr=allowed[0];setGrowthActiveButton();}
+            updateProposalStream();
           }
+        },1500);
+        return;
       }
       
-      // All other errors
-      isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
-      proposalStreamActive=false; proposalStreamReqId=null;
-      logError('[Deriv] Proposal FAILED',{code:ec,message:em,account:activeLoginid,symbol:sym,growth_rate:gr});
-      const aiStatusEl=$('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent='⚠️ Proposal failed: '+em;
-      const statusBar=$('derivStatusBar');
-      if(statusBar){statusBar.style.display='block';statusBar.textContent='❌ Proposal ['+ec+']: '+em;setTimeout(()=>{statusBar.style.display='none';},12000);}
-      toast('❌ Proposal ['+ec+']: '+em,'r',8000);
-      // Restart stream after error
-      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
+      // All other errors — just restart stream after a pause
+      console.warn('[Deriv] Proposal error ['+ec+']:',em,'— restarting stream in 3s');
+      toast('⚠️ ['+ec+'] — restarting…','y',4000);
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},3000);
       return;
     }
     
@@ -1361,37 +1352,42 @@ function handle(d){
     // Validate proposal has required fields
     if(!prop.id||!prop.ask_price){
       console.error('[Deriv] Proposal missing id or ask_price:',prop);
-      if(buyPendingAfterStream){
-        isBuying=false; buyPendingAfterStream=false;
-        toast('⚠️ Proposal incomplete — retrying…','y',3000);
-        setTimeout(()=>{if(!con&&authed)buyContract(buyFromAIPending);},1000);
-      }
+      isBuying=false; buyPendingAfterStream=false;
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
       return;
     }
     
-    // Validate barriers are present — if missing, this growth rate isn't giving proper data
-    if(!prop.barrier||!prop.low_barrier){
-      console.warn('[Deriv] Proposal returned without barriers — trying alternative growth. prop:',JSON.stringify({id:prop.id,barrier:prop.barrier,low_barrier:prop.low_barrier,sym,gr}));
+    // Deriv accumulator proposals return barriers as:
+    //   current_spot_high_barrier  (upper)
+    //   current_spot_low_barrier   (lower)
+    //   spot                       (current spot price)
+    // Fallback to barrier/low_barrier for compatibility
+    const upperBarrier = prop.current_spot_high_barrier || prop.high_barrier || prop.barrier || null;
+    const lowerBarrier = prop.current_spot_low_barrier  || prop.low_barrier  || null;
+    
+    if(!upperBarrier || !lowerBarrier){
+      // Proposal came back without barriers — this growth rate may not be valid right now
+      // Don't call scheduleAlternativeGrowth — just restart the stream cleanly
+      console.warn('[Deriv] Proposal has no barriers — restarting stream. Raw:',JSON.stringify(prop).slice(0,200));
       isBuying=false; buyPendingAfterStream=false;
       proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
       if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
-      requestContractsFor(sym);
-      setTimeout(()=>scheduleAlternativeGrowth(), 300);
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
       return;
     }
     
-    // ALWAYS update the proposal cache (whether buying or just streaming)
+    // Cache the proposal with correct field names
     latestProposal={
       id:prop.id,
-      ask_price:prop.ask_price,
-      spot:prop.spot,
-      barrier:prop.barrier,
-      low_barrier:prop.low_barrier,
+      ask_price:parseFloat(prop.ask_price),
+      spot:parseFloat(prop.spot||prop.current_spot||prevP),
+      barrier:parseFloat(upperBarrier),
+      low_barrier:parseFloat(lowerBarrier),
       sym:sym,
       gr:gr,
       ts:now()
     };
-    console.log('[ProposalStream] Cache updated:',{id:prop.id,ask_price:prop.ask_price,sym,gr});
+    console.log('[ProposalStream] ✅ Cached:',{id:prop.id,ask_price:prop.ask_price,upper:upperBarrier,lower:lowerBarrier,sym,gr});
     
     // Clear proposal safety timer since we got a valid response
     if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
@@ -1697,51 +1693,117 @@ function logout(){
   // ── CHART ──
   function initChart(){
     const el=$('chart');
-    if(chart){try{chart.remove();}catch(e){}}
+    if(!el)return;
+    if(chart){try{chart.remove();}catch(e){} chart=null;}
+    lineU=lineL=lineE=null;
     window.volumeSeries=null;
-    chart=LightweightCharts.createChart(el,{
-      layout:{background:{color:'#0a0d12'},textColor:'#7d8fa3'},
-      grid:{vertLines:{color:'#1e2736',style:LightweightCharts.LineStyle.Dotted},horzLines:{color:'#1e2736',style:LightweightCharts.LineStyle.Dotted}},
-      crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{color:'#3a4a5a',labelBackgroundColor:'#161c26'},horzLine:{color:'#3a4a5a',labelBackgroundColor:'#161c26'}},
-      rightPriceScale:{borderColor:'#1e2736',scaleMargins:{top:0.08,bottom:0.08},alignLabels:true,borderVisible:true,autoScale:true,mode:LightweightCharts.PriceScaleMode.Normal},
-      timeScale:{borderColor:'#1e2736',timeVisible:true,secondsVisible:true,borderVisible:true,rightOffset:12,barSpacing:6,fixLeftEdge:false,lockVisibleTimeRangeOnResize:true},
-      handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
-      handleScale:{axisPressedMouseMove:true,mouseWheel:true,pinch:true},
+
+    // Force explicit height so chart renders (height:100% alone doesn't work without parent px height)
+    const parentH = el.parentElement ? el.parentElement.clientHeight : 0;
+    const chartH = Math.max(280, parentH > 50 ? parentH : 320);
+    el.style.height = chartH + 'px';
+
+    chart = LightweightCharts.createChart(el, {
+      width: el.clientWidth || 400,
+      height: chartH,
+      layout: {
+        background: { color: '#0a0f1a' },
+        textColor: '#6b7a8d',
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: '#161e2e' },
+        horzLines: { color: '#161e2e' },
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: '#304560', width: 1, style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: '#1a2d46' },
+        horzLine: { color: '#304560', width: 1, style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: '#1a2d46' },
+      },
+      rightPriceScale: {
+        borderColor: '#1e2d42',
+        scaleMargins: { top: 0.12, bottom: 0.12 },
+        alignLabels: true,
+        borderVisible: true,
+        autoScale: true,
+      },
+      timeScale: {
+        borderColor: '#1e2d42',
+        timeVisible: true,
+        secondsVisible: true,
+        borderVisible: true,
+        rightOffset: 10,
+        barSpacing: 5,
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
     });
-    // Main price line — clean, thick, white/cyan like Deriv accumulator
-    area=chart.addLineSeries({
-      color:'#00c8ff',
-      lineWidth:2,
-      lineStyle:LightweightCharts.LineStyle.Solid,
-      priceLineVisible:true,
-      lastValueVisible:true,
-      crosshairMarkerVisible:true,
-      crosshairMarkerRadius:4,
-      crosshairMarkerBorderColor:'#00c8ff',
-      crosshairMarkerBackgroundColor:'#00c8ff',
-      priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}
+
+    // White price line exactly like Deriv accumulator
+    area = chart.addLineSeries({
+      color: '#e0e8f0',
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 4,
+      crosshairMarkerBorderColor: '#e0e8f0',
+      crosshairMarkerBackgroundColor: '#1a2d46',
+      priceFormat: { type: 'price', precision: dp, minMove: Math.pow(10, -dp) },
     });
-    const ro=new ResizeObserver(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});});
-    ro.observe(el);
-    setTimeout(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});},100);
+
+    const ro = new ResizeObserver(() => {
+      if(!chart || !el) return;
+      const h = Math.max(280, el.parentElement ? el.parentElement.clientHeight : 320);
+      el.style.height = h + 'px';
+      chart.applyOptions({ width: el.clientWidth, height: h });
+    });
+    ro.observe(el.parentElement || el);
+    setTimeout(() => {
+      if(!chart || !el) return;
+      const h = Math.max(280, el.parentElement ? el.parentElement.clientHeight : 320);
+      el.style.height = h + 'px';
+      chart.applyOptions({ width: el.clientWidth, height: h });
+    }, 200);
   }
 function mkLine(color,title,style,width){
   return chart.addLineSeries({color,lineWidth:width||2,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
 }
 function drawBarriers(){
-  clearBarriers();if(!con||!chart)return;
-  // Upper barrier — green dashed (like Deriv)
-  lineU=chart.addLineSeries({color:'#00e676',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Upper',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
-  // Lower barrier — red dashed (like Deriv)
-  lineL=chart.addLineSeries({color:'#ff3d71',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Lower',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
-  // Entry price — thin blue dotted reference
-  lineE=chart.addLineSeries({color:'#00b0ff',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Entry',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
-  // Seed initial data so barriers appear immediately
-  const seedData=priceHist.length>0?priceHist.slice(-80):prevP?[{time:Math.floor(Date.now()/1000),value:prevP}]:[];
-  if(seedData.length>0){
-    lineU.setData(seedData.map(p=>({time:p.time,value:con.upper})));
-    lineL.setData(seedData.map(p=>({time:p.time,value:con.lower})));
-    lineE.setData(seedData.map(p=>({time:p.time,value:con.entry})));
+  clearBarriers();
+  if(!con||!chart)return;
+  const fmt={type:'price',precision:dp,minMove:Math.pow(10,-dp)};
+  // Upper barrier — bright green solid thick line (exactly like Deriv accumulator)
+  lineU=chart.addLineSeries({
+    color:'#00d492',lineWidth:2,
+    lineStyle:LightweightCharts.LineStyle.Solid,
+    lastValueVisible:true,priceLineVisible:false,
+    crosshairMarkerVisible:false,title:'▲ Upper',priceFormat:fmt
+  });
+  // Lower barrier — bright red solid thick line
+  lineL=chart.addLineSeries({
+    color:'#ff4d6e',lineWidth:2,
+    lineStyle:LightweightCharts.LineStyle.Solid,
+    lastValueVisible:true,priceLineVisible:false,
+    crosshairMarkerVisible:false,title:'▼ Lower',priceFormat:fmt
+  });
+  // Entry reference — thin dashed white line
+  lineE=chart.addLineSeries({
+    color:'#ffffff44',lineWidth:1,
+    lineStyle:LightweightCharts.LineStyle.Dashed,
+    lastValueVisible:false,priceLineVisible:false,
+    crosshairMarkerVisible:false,title:'Entry',priceFormat:fmt
+  });
+  // Seed data from price history so barriers appear immediately
+  const base = priceHist.length > 0 ? priceHist.slice(-100) : (prevP ? [{time:Math.floor(Date.now()/1000),value:prevP}] : []);
+  if(base.length > 0){
+    const uD=base.map(p=>({time:p.time,value:con.upper}));
+    const lD=base.map(p=>({time:p.time,value:con.lower}));
+    const eD=base.map(p=>({time:p.time,value:con.entry}));
+    try{lineU.setData(uD);}catch(e){}
+    try{lineL.setData(lD);}catch(e){}
+    try{lineE.setData(eD);}catch(e){}
   }
 }
 function appendBarrierPts(t){
@@ -2220,7 +2282,8 @@ function switchSym(newSym,newDp){
 }
 function requestContractsFor(sSymbol){
   if(ws&&ws.readyState===1){
-    send({contracts_for:sSymbol,currency:userCurrency||'USD',product_type:'basic'});
+    // Do NOT send product_type — it filters out ACCU on many account types
+    send({contracts_for:sSymbol,currency:userCurrency||'USD',landing_company:'svg'});
   }
 }
 function getAllowedGrowths(sSymbol){
@@ -2396,69 +2459,56 @@ function stopProposalStream(){
 
 function updateProposalStream(){
   if(!ws||ws.readyState!==1||!authed)return;
-  if(con)return;
+  if(con||isBuying)return;
   
-  const currentStake=parseFloat($('stkInput').value)||stake;
+  const currentStake=parseFloat(($('stkInput')&&$('stkInput').value)||stake)||stake;
   if(!currentStake||currentStake<=0)return;
 
-  // If we have a firm "not supported" answer, skip
+  // Hard block only when we have a definitive 'not supported' cache entry
   const cc=contractsCache[sym];
   if(cc&&cc.supportsAccu===false){
-    console.warn('[ProposalStream] ACCU not supported on',sym,'— skipping stream');
+    console.warn('[ProposalStream] ACCU confirmed not supported on',sym);
     return;
   }
+  
+  // If no cache yet, fetch it in background but proceed anyway — Deriv will validate
+  if(!cc){ requestContractsFor(sym); }
 
-  // If no cache yet, request it and retry after it arrives
-  if(!cc){
-    requestContractsFor(sym);
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
-    return;
-  }
-
-  // Auto-correct gr if it's not in the allowed list
-  const allowed=getAllowedGrowths(sym);
-  if(allowed.length && !allowed.includes(gr)){
-    gr=allowed[0];
-    setGrowthActiveButton();
-    console.log('[ProposalStream] Auto-corrected gr to',gr,'for',sym);
-  }
-
-  // CRITICAL: Always forget_all first, then wait before subscribing
+  // Clear any existing timers and subscriptions
   proposalStreamActive=false;
   proposalStreamReqId=null;
   latestProposal=null;
   if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
   if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
   
-  ws.send(JSON.stringify({forget_all:'proposal'}));
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
   
   proposalStreamTimer=setTimeout(()=>{
-    if(!ws||ws.readyState!==1||!authed||con)return;
+    if(!ws||ws.readyState!==1||!authed||con||isBuying)return;
     proposalReqCounter++;
     const thisReqId=proposalReqCounter;
     proposalStreamReqId=thisReqId;
     proposalStreamActive=true;
     
-    const tradeCurrency=userCurrency||'USD';
     const payload={
       proposal:1,
       req_id:thisReqId,
       contract_type:'ACCU',
       symbol:sym,
-      amount:parseFloat($('stkInput').value)||stake,
+      amount:currentStake,
       basis:'stake',
-      growth_rate:parseFloat((gr/100).toFixed(3)),
-      currency:tradeCurrency,
+      growth_rate:gr/100,   // Deriv expects decimal: 1%=0.01, 2%=0.02 etc
+      currency:userCurrency||'USD',
       subscribe:1
     };
-    console.log('[ProposalStream] Subscribing:',{sym,gr,reqId:thisReqId});
+    console.log('[ProposalStream] Sending:',payload);
     ws.send(JSON.stringify(payload));
     
-    // Periodic refresh every 25s to keep stream alive
+    // Refresh stream every 30s to keep it alive
     proposalRetryTimer=setTimeout(()=>{
-      if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
-    },25000);
-  },400);
+      if(!con&&!isBuying&&authed&&ws&&ws.readyState===1)updateProposalStream();
+    },30000);
+  },500);
 }
 
 // ═══════════════════════════════════════════
@@ -2586,7 +2636,6 @@ function updateProposalStream(){
           proposalStreamReqId=thisReqId;
           proposalStreamActive=true;
 
-          const tradeCurrency=userCurrency||'USD';
           const proposalPayload={
             proposal:1,
             req_id:thisReqId,
@@ -2594,8 +2643,8 @@ function updateProposalStream(){
             symbol:sym,
             amount:currentStake,
             basis:'stake',
-            growth_rate:parseFloat((gr/100).toFixed(3)),
-            currency:tradeCurrency,
+            growth_rate:gr/100,   // decimal: 1%=0.01, 2%=0.02
+            currency:userCurrency||'USD',
             subscribe:1
           };
           console.log('[BuyContract] Sending proposal request:',{sym,gr,stake:currentStake,reqId:thisReqId});
