@@ -975,7 +975,8 @@ function getStoredToken(loginid){
       saveTokenStore();
       activeToken = first; activeLoginid = firstLoginid;
       lsSet('deriv_active', firstLoginid);
-      authed = true;
+      // NOTE: Do NOT set authed=true here — let the WS authorize response set it.
+      // Setting it early causes a broken half-authed state that gets wiped on InvalidToken.
       hideLogin();
       try {
         const url = new URL(window.location.origin + window.location.pathname);
@@ -1003,7 +1004,7 @@ function getStoredToken(loginid){
   })();
 
 function showLogin(){$('loginOverlay').style.display='flex';}
-function hideLogin(){ const el = document.getElementById('loginOverlay'); if(el) el.style.setProperty('display', 'none', 'important'); bootApp(); }
+function hideLogin(){ const el = document.getElementById('loginOverlay'); if(el) el.style.setProperty('display', 'none', 'important'); }
 
 // demoBtn is now an OAuth link — no click handler needed (handled by href redirect)
 
@@ -1050,6 +1051,7 @@ function connect(){
     ws.onopen=()=>{
       clearTimeout(connTO);wsAlive=true;reconnDelay=800;
       setDot('on');
+      $('connBanner').classList.remove('show');
       ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
       if(activeToken){
           console.log('[WS] Sending authorize for:', activeLoginid);
@@ -1058,8 +1060,8 @@ function connect(){
       pingTimer=setInterval(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({ping:1}));},15000);
     };
     ws.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(err){}};
-    ws.onerror=()=>{wsAlive=false;setDot('err');};
-    ws.onclose=()=>{wsAlive=false;setDot('rc');schedReconn();};
+    ws.onerror=()=>{wsAlive=false;setDot('err');$('connBanner').classList.add('show');};
+    ws.onclose=()=>{wsAlive=false;setDot('rc');$('connBanner').classList.add('show');schedReconn();};
   }
 function schedReconn(){clearTimeout(reconnTimer);reconnTimer=setTimeout(()=>{reconnDelay=Math.min(reconnDelay*1.5,15000);connect();},reconnDelay);}
 function send(obj){
@@ -1085,7 +1087,9 @@ function handle(d){
           setTimeout(() => { if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize: activeToken})); }, 1000);
           return;
         }
-        if(!activeToken) showLogin();
+        // No token or retried already — show login
+        window._authRetried = false;
+        if(!activeToken) { showLogin(); return; }
         return;
       }
     }
@@ -1093,16 +1097,25 @@ function handle(d){
     const t = d.msg_type;
   if(t==='authorize'){
     window._authInProgress = false;
-    // Success! Clear retry flag
     if(!d.error) {
-      window._authRetried = false;
+      window._authRetried = false; // Reset on any successful auth
     }
     if(d.error){
       const ec=d.error.code||'',em=d.error.message||'';
       const hard=['InvalidToken','AuthorizationRequired','InvalidAppID'];
       console.error('[Deriv] Auth Error:', ec, em);
       if(hard.includes(ec)){
-        // Only delete if it's a "hard" permanent error
+        // Give one silent retry before wiping — handles transient InvalidToken after fresh OAuth redirect
+        if(!window._authRetried){
+          window._authRetried = true;
+          console.log('[Deriv] Hard auth error on first attempt, retrying once silently...');
+          setTimeout(()=>{
+            if(ws && ws.readyState===1 && activeToken) ws.send(JSON.stringify({authorize: activeToken}));
+            else connect();
+          }, 2000);
+          return;
+        }
+        // Second failure — definitely bad token, wipe and show login
         if(activeLoginid && tokenStore[activeLoginid]){
             delete tokenStore[activeLoginid];
             saveTokenStore();
@@ -1111,7 +1124,7 @@ function handle(d){
         activeToken = '';
         activeLoginid = '';
         authed = false;
-        
+        window._authRetried = false;
         toast('Session expired ('+ec+'). Please log in again.', 'r', 5000);
         showLogin();
       }else{
@@ -1121,6 +1134,7 @@ function handle(d){
           console.log('[Deriv] Transient auth error, retrying silently...');
           setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},2000);
         } else {
+          window._authRetried = false;
           showLogin();
         }
       }
@@ -1270,16 +1284,6 @@ function handle(d){
         return;
       }
       
-      if(isBuying){
-          isBuying = false;
-          window._buyStartTime = 0;
-          if(ec !== 'InputValidationFailed' && ec !== 'AlreadySubscribed') {
-              toast('❌ Execution Error: ' + em, 'r', 5000);
-          }
-      }
-      return;
-    }
-      
       // Growth/barrier errors — retry with alternative growth silently
       if(ec==='InvalidGrowthRate'||/growth rate/i.test(em)||/barrier/i.test(em)||/not support/i.test(em)){
         console.warn('[Deriv] Proposal rejected ('+em+') — retrying alternative growth.');
@@ -1300,8 +1304,8 @@ function handle(d){
       
       // RateLimit — back off and retry
       if(ec==='RateLimit'||/rate limit/i.test(em)){
-        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
         const wasBuying=isBuying, wasFromAI=buyFromAIPending;
+        isBuying=false; buyPendingAfterStream=false; proposalStreamActive=false;
         setTimeout(()=>{
           if(!con&&authed&&ws&&ws.readyState===1){
             if(wasBuying) buyContract(wasFromAI); else updateProposalStream();
@@ -1309,6 +1313,14 @@ function handle(d){
         },3000);
         toast('⚠️ Rate limit — retrying in 3s…','y',3000);
         return;
+      }
+
+      if(isBuying){
+          isBuying = false;
+          window._buyStartTime = 0;
+          if(ec !== 'InputValidationFailed' && ec !== 'AlreadySubscribed') {
+              toast('❌ Execution Error: ' + em, 'r', 5000);
+          }
       }
       
       // All other errors
@@ -1618,6 +1630,7 @@ function switchAccount(loginid){
   pendingProposal=null;
   latestProposal=null;
   window._authRetried=false;
+  window._authInProgress=false;
   console.log('[Account Switch] Switching to',loginid);
   lsSet('deriv_active',loginid);
   $('hBalance').textContent='Switching…';
@@ -1636,7 +1649,8 @@ function logout(){
   stopProposalStream();
   if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
   if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
-  tokenStore={};activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];activeLoginid='';window._authRetried=false;
+  tokenStore={};activeToken='';authed=false;userInfo={};realBalance=null;accountList=[];activeLoginid='';
+  window._authRetried=false;window._authInProgress=false;
   isBuying=false;buyPendingAfterStream=false;buyFromAIPending=false;pendingProposal=null;latestProposal=null;
   if(con)closeContract('Logout',false);
   clearTimeout(reconnTimer);clearTimeout(connTO);clearInterval(pingTimer);clearInterval(heartbeatTimer);
