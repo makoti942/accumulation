@@ -1366,10 +1366,14 @@ function handle(d){
       if(statusBar){statusBar.style.display='block';statusBar.textContent='❌ Buy ['+ec+']: '+em;setTimeout(()=>{statusBar.style.display='none';},12000);}
       con=null; clearBarriers(); renderNoContract();
       if(ec==='TooManyOpenPositions'||em.toLowerCase().includes('too many')){
-        toast('⚠️ Too many open positions — clearing…','y',5000);
+        toast('⚠️ Too many open positions — selling all & refreshing balance…','y',5000);
         aiCool=true;
-        send({portfolio:1,contract_type:['ACCU']});
-        setTimeout(()=>{aiCool=false;updateProposalStream();},8000);
+        // Fetch portfolio then sell all open ACCU contracts
+        send({portfolio:1});
+        // Force balance refresh after sells settle (Deriv needs a moment)
+        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},3000);
+        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},6000);
+        setTimeout(()=>{aiCool=false;if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},9000);
       }else if(ec==='InsufficientBalance'||em.toLowerCase().includes('insufficient')){
         toast('❌ Insufficient balance — reduce stake or top up account','r',8000);
         if(aiStatusEl) aiStatusEl.textContent='❌ Insufficient balance — reduce stake';
@@ -1456,26 +1460,48 @@ function handle(d){
     if(poc.bid_price!==undefined) con.payout=parseFloat(poc.bid_price);
     if(poc.buy_price!==undefined) con.stake=parseFloat(poc.buy_price);
     updateConUI();
-    // Handle contract settlement from Deriv
+    // Immediately update balance from Deriv's settlement data
+    if(poc.balance_after!==undefined && poc.balance_after!==null){
+      realBalance=parseFloat(poc.balance_after);
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      if(acct)acct.balance=realBalance;
+      updateBalanceUI();
+    }
+    // Handle contract settlement
     if(poc.status==='won'||poc.status==='lost'||poc.status==='sold'){
+      // Ensure we have the final payout value before calculating win/loss
+      if(poc.bid_price!==undefined && parseFloat(poc.bid_price)>0) con.payout=parseFloat(poc.bid_price);
+      if(poc.payout!==undefined && parseFloat(poc.payout)>0) con.payout=parseFloat(poc.payout);
+      if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
       closeContract('Deriv:'+poc.status, con.byAI);
     }
     return;
   }
   if(t==='sell'){
     isBuying=false;
+    if(!d.error && d.sell){
+      // Deriv sends balance_after in the sell response — update immediately
+      if(d.sell.balance_after!==undefined){
+        realBalance=parseFloat(d.sell.balance_after);
+        const acct=accountList.find(a=>a.loginid===activeLoginid);
+        if(acct)acct.balance=realBalance;
+        updateBalanceUI();
+        console.log('[Deriv] Balance after sell:',realBalance,userCurrency);
+      }
+    }
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown sell error';
       console.error('[Deriv] Sell error:', {code: ec, message: em, raw: d.error});
       const aiStatusEl = $('sigSub');
       if(['InvalidSellContractProposal','AlreadySold','ContractAlreadySold'].includes(ec)){
-        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Contract already sold/settled';
+        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Contract already settled by Deriv';
+        // Contract already closed by Deriv (barrier hit) — do NOT log again here.
+        // The loss was already counted by onKO() or closeContract() via proposal_open_contract.
         if(con){
-          if(con.byAI){aiLoss++;aiTrades++;aiPnl-=con.stake;addHistItem({won:false,pnl:-con.stake,reason:'KO',ticks:con.ticks});}
           con=null;clearBarriers();renderNoContract();exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
         }
         // Refresh balance after error-sell
-        setTimeout(()=>send({balance:1}),1000);
+        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1000);
       }else{
         if(aiStatusEl) aiStatusEl.textContent = '⚠️ Sell error: ' + em;
         toast('⚠️ Sell error ['+ec+']: '+em,'r',5000);
@@ -2004,7 +2030,16 @@ function analyzeHistoricalBreaks(symKey) {
     }
 
     updateConUI();
-    if(p>=con.upper||p<=con.lower){recordBreak(sym,con.ticks);updatePatternUI(sym);onKO(p);prevP=p;addTickRow(p,chg,t);return;}
+    if(p>=con.upper||p<=con.lower){
+      // Price approaching/hitting barrier — let Deriv confirm via proposal_open_contract
+      // Do NOT call onKO() locally — Deriv is the authority on barrier breach
+      // Just visual warning so user knows
+      recordBreak(sym,con.ticks);updatePatternUI(sym);
+      $('chartWrap').classList.add('danger');
+      setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
+      prevP=p;addTickRow(p,chg,t);
+      return;
+    }
     if(tp&&con.pnl>=tp)sniperExit(p,0,'Take Profit');
   }
 
@@ -2690,16 +2725,18 @@ function closeContract(reason,fromAI){
     const byAI = con.byAI;
     const realId = con.realId;
 
-    // Proper win detection:
-    // Deriv:won or Deriv:sold = won (server confirmed)
-    // KO or Deriv:lost = lost (knocked out)
-    // Manual exit with positive pnl = won
-    const isKO = reason==='KO'||reason==='Deriv:lost'||reason.includes('KO')||reason.includes('lost');
-    const isDerivSold = reason==='Deriv:sold'||reason==='Deriv:won';
-    const won = isDerivSold ? (con.pnl>=0) : !isKO && con.pnl > 0;
-
-    let finalProfit = won ? parseFloat((con.pnl||0).toFixed(2)) : parseFloat((-stk).toFixed(2));
-    let finalPayout = won ? parseFloat((con.payout||stk).toFixed(2)) : 0;
+    // Win detection — accumulator wins when payout > stake
+    // payout (bid_price from Deriv) = what we receive. profit = payout - stake.
+    // A "win" = we received more back than we put in.
+    // Deriv:lost or KO = always a loss (barrier hit or forced close)
+    const isKO = reason==='Deriv:lost' || reason==='KO';
+    const payoutVal = parseFloat(con.payout||0);
+    // Win if: Deriv confirmed 'won', OR we received more than staked (sold with profit)
+    const won = isKO ? false
+              : reason==='Deriv:won' ? true
+              : (payoutVal > stk && stk > 0);
+    const finalProfit = won ? parseFloat((payoutVal - stk).toFixed(2)) : parseFloat((-stk).toFixed(2));
+    const finalPayout = won ? payoutVal : 0;
 
     if(byAI||fromAI){
       if(won){aiWins++;}else{aiLoss++;}
