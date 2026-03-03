@@ -1034,8 +1034,8 @@ function bootApp(){
   window.addEventListener('offline',()=>{toast('😂 Offline','r');setDot('err');});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}});
   document.addEventListener('touchstart',()=>{if(!wsAlive&&appReady){reconnDelay=800;connect();}},{passive:true});
-  // Auto vol scan every 12s when AI on and no active trade
-  setInterval(()=>{if(aiOn&&!con&&now()-lastVolSwitch>12000)doVolScanAndSwitch(true);},12000);
+  // Vol scan every 60s only when AI is on AND no active trade
+  setInterval(()=>{if(aiOn&&!con&&!isBuying&&now()-lastVolSwitch>55000)doVolScanAndSwitch(true);},60000);
 }
 
 // ═══════════════════════════════════════════
@@ -1453,57 +1453,68 @@ function handle(d){
     }
     const bd=d.buy;
     if(bd){
-      console.log('[Deriv] Buy confirmed ✔️:', {
-        contract_id: bd.contract_id,
-        buy_price: bd.buy_price,
-        balance_after: bd.balance_after,
-        start_time: bd.start_time
+      console.log('[Deriv] ✅ Buy confirmed:', {
+        contract_id:bd.contract_id,
+        buy_price:bd.buy_price,
+        balance_after:bd.balance_after,
+        longcode:bd.longcode
       });
-      // Update AI status to show trade is live
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '✅ Trade live on Deriv · ID:' + bd.contract_id;
-      // If for some reason con was cleared, re-create it from buy data
+      if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
+
       if(!con){
-        con = {
-          entry: bd.start_time_spot ? parseFloat(bd.start_time_spot) : prevP,
-          upper: bd.barrier ? parseFloat(bd.barrier) : (prevP + barrierDist(prevP)),
-          lower: bd.low_barrier ? parseFloat(bd.low_barrier) : (prevP - barrierDist(prevP)),
-          ticks: 0,
-          stake: parseFloat(bd.buy_price || 0),
-          pnl: 0,
-          payout: parseFloat(bd.buy_price || 0),
-          start: bd.start_time || now(),
-          byAI: !!(window._lastEntryFromAI),
-          realId: bd.contract_id,
-          isReal: true
+        // con was somehow cleared — rebuild from buy response
+        con={
+          entry:prevP,
+          upper:prevP?prevP+barrierDist(prevP):0,
+          lower:prevP?prevP-barrierDist(prevP):0,
+          ticks:0,
+          stake:parseFloat(bd.buy_price||0),
+          pnl:0,
+          payout:parseFloat(bd.buy_price||0),
+          start:bd.start_time||now(),
+          byAI:!!(window._lastEntryFromAI),
+          realId:bd.contract_id,
+          isReal:true
         };
       } else {
         con.realId=bd.contract_id;
-        if(bd.barrier)con.upper=parseFloat(bd.barrier);
-        if(bd.low_barrier)con.lower=parseFloat(bd.low_barrier);
-        if(bd.start_time)con.start=bd.start_time;
+        con.stake=parseFloat(bd.buy_price||con.stake);
+        // Update balance after from Deriv immediately
+        if(bd.balance_after!==undefined){
+          realBalance=parseFloat(bd.balance_after);
+          const acct=accountList.find(a=>a.loginid===activeLoginid);
+          if(acct)acct.balance=realBalance;
+          updateBalanceUI();
+        }
       }
-      send({proposal_open_contract:1,contract_id:con.realId,subscribe:1});
-      drawBarriers();updateConUI();toast('✅ Contract confirmed by Deriv · ID:'+bd.contract_id,'g',3000);
+      // Subscribe to contract P&L updates — this is how we get live pnl and settlement
+      send({proposal_open_contract:1, contract_id:con.realId, subscribe:1});
+      drawBarriers();
+      updateConUI();
+      $('exitMeter').classList.add('on');
+      phase='IN_TRADE'; updatePhaseUI();
+      const $sigSub=$('sigSub');
+      if($sigSub) $sigSub.textContent='✅ LIVE · ID:'+bd.contract_id;
+      const $sigTxt=$('sigTxt');
+      if($sigTxt){$sigTxt.className='sig-txt BUY';$sigTxt.textContent='IN TRADE';}
+      toast('✅ Trade placed · ID:'+bd.contract_id,'g',4000);
     }
     return;
   }
   if(t==='proposal_open_contract'){
-    const poc = d.proposal_open_contract;
-    if(!poc || !con) return;
-    
-    // ABSOLUTE SERVER TRUTH: Sync contract state ONLY from official data
-    if(poc.profit !== undefined) con.pnl = parseFloat(poc.profit);
-    if(poc.bid_price !== undefined) con.payout = parseFloat(poc.bid_price);
-    if(poc.sell_price !== undefined && poc.sell_price > 0) con.payout = parseFloat(poc.sell_price);
-    if(poc.buy_price !== undefined) con.stake = parseFloat(poc.buy_price);
-    
-    // Update UI strictly from the sync values
+    const poc=d.proposal_open_contract;
+    if(!poc||!con)return;
+    // Sync real barrier values from Deriv (they may differ slightly from proposal)
+    if(poc.high_barrier&&parseFloat(poc.high_barrier)>0) con.upper=parseFloat(poc.high_barrier);
+    if(poc.low_barrier&&parseFloat(poc.low_barrier)>0) con.lower=parseFloat(poc.low_barrier);
+    if(poc.entry_spot&&parseFloat(poc.entry_spot)>0) con.entry=parseFloat(poc.entry_spot);
+    if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
+    if(poc.bid_price!==undefined) con.payout=parseFloat(poc.bid_price);
+    if(poc.buy_price!==undefined) con.stake=parseFloat(poc.buy_price);
     updateConUI();
-
-    // Settlement Logic: Only close when finalized
-    if(poc.status === 'lost' || poc.status === 'sold') {
-      closeContract('Deriv:' + poc.status, con.byAI);
+    // Handle contract settlement from Deriv
+    if(poc.status==='won'||poc.status==='lost'||poc.status==='sold'){
+      closeContract('Deriv:'+poc.status, con.byAI);
     }
     return;
   }
@@ -1687,59 +1698,50 @@ function logout(){
   function initChart(){
     const el=$('chart');
     if(chart){try{chart.remove();}catch(e){}}
+    window.volumeSeries=null;
     chart=LightweightCharts.createChart(el,{
-      layout:{background:{color:'#0a0d12'},textColor:'#d1d4dc'},
-      grid:{vertLines:{visible:false},horzLines:{visible:false}},
-      crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
-      rightPriceScale:{
-          borderColor:'transparent',
-          scaleMargins:{top:0.12,bottom:0.12},
-          alignLabels: true,
-          borderVisible: false,
-          autoScale: true
-      },
-      timeScale:{borderColor:'transparent',timeVisible:true,secondsVisible:true,borderVisible:false,rightOffset:8},
-      handleScroll: true,
-      handleScale: true,
+      layout:{background:{color:'#0a0d12'},textColor:'#7d8fa3'},
+      grid:{vertLines:{color:'#1e2736',style:LightweightCharts.LineStyle.Dotted},horzLines:{color:'#1e2736',style:LightweightCharts.LineStyle.Dotted}},
+      crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{color:'#3a4a5a',labelBackgroundColor:'#161c26'},horzLine:{color:'#3a4a5a',labelBackgroundColor:'#161c26'}},
+      rightPriceScale:{borderColor:'#1e2736',scaleMargins:{top:0.08,bottom:0.08},alignLabels:true,borderVisible:true,autoScale:true,mode:LightweightCharts.PriceScaleMode.Normal},
+      timeScale:{borderColor:'#1e2736',timeVisible:true,secondsVisible:true,borderVisible:true,rightOffset:12,barSpacing:6,fixLeftEdge:false,lockVisibleTimeRangeOnResize:true},
+      handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:false},
+      handleScale:{axisPressedMouseMove:true,mouseWheel:true,pinch:true},
     });
-    area=chart.addAreaSeries({
-      lineColor:'#2962FF',topColor:'rgba(41, 98, 255, 0.28)',
-      bottomColor:'rgba(41, 98, 255, 0.05)',lineWidth:3,
-      priceLineVisible: true,
-      lastValueVisible: true,
-      priceFormat: {
-        type: 'price',
-        precision: dp,
-        minMove: Math.pow(10, -dp)
-      }
+    // Main price line — clean, thick, white/cyan like Deriv accumulator
+    area=chart.addLineSeries({
+      color:'#00c8ff',
+      lineWidth:2,
+      lineStyle:LightweightCharts.LineStyle.Solid,
+      priceLineVisible:true,
+      lastValueVisible:true,
+      crosshairMarkerVisible:true,
+      crosshairMarkerRadius:4,
+      crosshairMarkerBorderColor:'#00c8ff',
+      crosshairMarkerBackgroundColor:'#00c8ff',
+      priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}
     });
-    // Add volume-like histogram for ticks
-    const volumeSeries = chart.addHistogramSeries({
-        color: '#26a69a',
-        priceFormat: { type: 'volume' },
-        priceScaleId: '',
-    });
-    volumeSeries.priceScale().applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
-    });
-    window.volumeSeries = volumeSeries;
-  const ro=new ResizeObserver(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});});
-  ro.observe(el);
-  setTimeout(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});},100);
-}
+    const ro=new ResizeObserver(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});});
+    ro.observe(el);
+    setTimeout(()=>{if(chart&&el)chart.applyOptions({width:el.clientWidth,height:el.clientHeight});},100);
+  }
 function mkLine(color,title,style,width){
-  return chart.addLineSeries({color,lineWidth:width||1,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
+  return chart.addLineSeries({color,lineWidth:width||2,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
 }
 function drawBarriers(){
   clearBarriers();if(!con||!chart)return;
-  lineU=mkLine('#00e676','Upper',LightweightCharts.LineStyle.Solid,2);
-  lineL=mkLine('#ff3d71','Lower',LightweightCharts.LineStyle.Solid,2);
-  lineE=mkLine('#00b0ff55','Entry',LightweightCharts.LineStyle.Dashed,1);
-  if(priceHist.length>0){
-    const last=priceHist.slice(-50);
-    lineU.setData(last.map(p=>({time:p.time,value:con.upper})));
-    lineL.setData(last.map(p=>({time:p.time,value:con.lower})));
-    lineE.setData(last.map(p=>({time:p.time,value:con.entry})));
+  // Upper barrier — green dashed (like Deriv)
+  lineU=chart.addLineSeries({color:'#00e676',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Upper',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
+  // Lower barrier — red dashed (like Deriv)
+  lineL=chart.addLineSeries({color:'#ff3d71',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Lower',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
+  // Entry price — thin blue dotted reference
+  lineE=chart.addLineSeries({color:'#00b0ff',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title:'Entry',priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
+  // Seed initial data so barriers appear immediately
+  const seedData=priceHist.length>0?priceHist.slice(-80):prevP?[{time:Math.floor(Date.now()/1000),value:prevP}]:[];
+  if(seedData.length>0){
+    lineU.setData(seedData.map(p=>({time:p.time,value:con.upper})));
+    lineL.setData(seedData.map(p=>({time:p.time,value:con.lower})));
+    lineE.setData(seedData.map(p=>({time:p.time,value:con.entry})));
   }
 }
 function appendBarrierPts(t){
@@ -1846,15 +1848,6 @@ function analyzeHistoricalBreaks(symKey) {
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
   if(!isHistory){
     try{area.update(pt);}catch(e){}
-    try{
-      if(window.volumeSeries) {
-        window.volumeSeries.update({
-          time: t,
-          value: Math.abs(chg),
-          color: chg >= 0 ? 'rgba(0, 230, 118, 0.5)' : 'rgba(255, 61, 113, 0.5)'
-        });
-      }
-    }catch(e){}
     appendBarrierPts(t);
   }
   
@@ -2167,17 +2160,15 @@ function doVolScanAndSwitch(silent){
 
     renderVolSide(results);
 
-    // FAST-QUANTUM PARALLEL SCANNING: Rapidly hop to the best market
-    if(aiOn && !con && results.length > 0){
+    // NEVER auto-switch symbol when there's an active trade or buy in progress
+    if(aiOn && !con && !isBuying && results.length > 0){
       const best = results[0];
       const currentScore = volScores[sym] ? volScores[sym].score : 0;
-      // Added aiOn check to prevent unwanted switching when AI is off
-      if(now() - lastVolSwitch > 5000 && (best.score > currentScore + 10)){
+      // Only switch if best is significantly better AND enough time has passed
+      if(now() - lastVolSwitch > 30000 && best.score > currentScore + 15 && best.sym !== sym){
         lastVolSwitch = now();
-        if(best.sym !== sym){
-          switchSym(best.sym, best.dp);
-          toast('⚡ AI JUMP → ' + best.name, 'p');
-        }
+        switchSym(best.sym, best.dp);
+        toast('⚡ AI → ' + best.name + ' (score:'+best.score+')', 'p');
       }
     }
   },1500);
@@ -2242,74 +2233,39 @@ function setGrowthActiveButton(){
   $('sGrowth').textContent=gr+'%';
 }
 function scheduleAlternativeGrowth(){
+  // Called ONLY when Deriv explicitly rejects a growth rate or barrier is missing
+  isBuying=false; buyPendingAfterStream=false;
+  latestProposal=null; proposalStreamActive=false; proposalStreamReqId=null;
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+
   if(growthLock){
-    console.warn('[GrowthLock] Alternative growth blocked by user lock.');
-    isBuying=false; buyPendingAfterStream=false;
     toast('❌ Growth rate '+gr+'% not available on '+sym,'r',5000);
     return;
   }
+
   const allowed=getAllowedGrowths(sym);
   if(!growthRetry||growthRetry.sym!==sym){
-    growthRetry={sym,tried:new Set(),triedSymbols:new Set([sym]),count:0,fromAI:!!window._lastEntryFromAI};
+    growthRetry={sym,tried:new Set([gr]),count:1,fromAI:!!window._lastEntryFromAI};
+  } else {
+    growthRetry.tried.add(gr);
+    growthRetry.count++;
   }
-  if(growthRetry.count>=allowed.length){
-    if(forceExec){
-      const tried=growthRetry.triedSymbols||new Set([sym]);
-      const ordered=[...ALL_SYMS].sort((a,b)=>{
-        const va=(volScores[a.sym]&&volScores[a.sym].score)||0;
-        const vb=(volScores[b.sym]&&volScores[b.sym].score)||0;
-        return vb-va;
-      }).map(s=>s.sym);
-      const next=ordered.find(sy=>!tried.has(sy));
-      if(next){
-        growthRetry.triedSymbols.add(next);
-        const info=ALL_SYMS.find(s=>s.sym===next);
-        isBuying=false; buyPendingAfterStream=false;
-        switchSym(next,info?info.dp:3);
-        requestContractsFor(next);
-        growthRetry.sym=next;
-        growthRetry.tried=new Set();
-        growthRetry.count=0;
-        // Wait for contracts_for to arrive before retrying
-        setTimeout(()=>{
-          if(!con&&!isBuying) scheduleAlternativeGrowth();
-        },800);
-        return;
-      }
-    }
-    toast('ACCU not available on any symbol — scanning…','r',6000);
-    isBuying=false; buyPendingAfterStream=false;
-    con=null;clearBarriers();renderNoContract();
-    doVolScanAndSwitch(true);
-    return;
-  }
-  growthRetry.count++;
-  growthRetry.tried.add(gr);
+
   const candidate=allowed.find(r=>!growthRetry.tried.has(r));
-  if(!candidate){
-    if(forceExec&&allowed.length>0){
-      // All growths tried — move to next symbol
-      growthRetry.count=allowed.length;
-      scheduleAlternativeGrowth();
-      return;
-    }
-    toast('ACCU not available on '+sym+' — scanning…','r',6000);
-    isBuying=false; buyPendingAfterStream=false;
-    con=null;clearBarriers();renderNoContract();
-    doVolScanAndSwitch(true);
+  if(candidate){
+    gr=candidate;
+    setGrowthActiveButton();
+    console.log('[AltGrowth] Trying gr='+gr+'% on '+sym);
+    toast('⚠️ Trying '+gr+'% on '+sym,'y',2000);
+    setTimeout(()=>{if(!con&&authed)buyContract(growthRetry.fromAI);},600);
     return;
   }
-  gr=candidate;
-  setGrowthActiveButton();
-  // CRITICAL: invalidate stale proposal cache so buyContract requests a fresh one with new gr
-  latestProposal=null;
-  proposalStreamActive=false;
-  proposalStreamReqId=null;
-  if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
-  console.log('[AltGrowth] Retrying with gr='+gr+'% on '+sym);
-  setTimeout(()=>{
-    if(!con) buyContract(growthRetry.fromAI);
-  },400);
+
+  // All growth rates on this symbol exhausted — inform user, do NOT auto-switch symbol
+  growthRetry=null;
+  toast('❌ ACCU not available on '+sym+' — try a different symbol','r',6000);
+  const sb=$('derivStatusBar');
+  if(sb){sb.style.display='block';sb.textContent='⚠️ No valid growth rate for '+sym+' — please select a different symbol';setTimeout(()=>{sb.style.display='none';},10000);}
 }
 
     // ═══════════════════════════════════════════
@@ -2392,27 +2348,26 @@ function scheduleAlternativeGrowth(){
   // SESSION SYNC: Only attempt entry if fully authorized on Deriv server
   if(sig==='BUY'&&!con&&!aiCool&&!isBuying){
     if(!authed || !activeToken || activeToken.length < 10){
-      // Not yet authorized — wait silently, do not attempt trade
       if($('sigSub')) $('sigSub').textContent = '⏳ Waiting for Deriv auth…';
     } else {
       doEntry(price,entryScore);
     }
   }
-  // Scan vol every 15s when no trade
-  if(now()-lastVolSwitch>15000&&!con)doVolScanAndSwitch(true);
+  // NOTE: Vol scan removed from here — it runs on its own 30s interval in bootApp
+  // to prevent it from interfering with active trading flow
 }
 
 // ═══════════════════════════════════════════
 // ENTRY & EXIT
 // ═══════════════════════════════════════════
 function doEntry(price,score){
-  if(con||exitingNow||isBuying)return;
-  // REMOVED COOLDOWN: No more aiCool delay
+  if(con||exitingNow||isBuying||aiCool)return;
   ticksHeld=0;
   phase='FIRE';updatePhaseUI();
-  showFlash('flashBuy','AI ENTRY @ '+price.toFixed(dp),1000);
-  toast('🎯 AI FORCE ENTRY @ '+price.toFixed(dp),'p');
-  buyContract(true);phase='IN_TRADE';updatePhaseUI();
+  showFlash('flashBuy','AI ENTRY @ '+price.toFixed(dp),1200);
+  toast('🎯 AI Entry @ '+price.toFixed(dp),'p');
+  buyContract(true);
+  // phase transitions to IN_TRADE once Deriv confirms (in buy handler)
 }
 
 function sniperExit(price,bp,reason){
@@ -2422,9 +2377,9 @@ function sniperExit(price,bp,reason){
   closeContract(reason,true);
   setTimeout(()=>{
     phase='HUNTING';exitingNow=false;updatePhaseUI();
-    // Force immediate vol scan after exit
-    if(aiOn){lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(true),400);}
-  },400);
+    // Restart proposal stream after a short cooldown, staying on the same symbol
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
+  },500);
 }
 
 function stopProposalStream(){
@@ -2659,17 +2614,53 @@ function updateProposalStream(){
     }
 
 function _executeBuyFromProposal(prop, fromAI){
+    if(!prop||!prop.id||!prop.ask_price){
+      console.error('[Buy] Cannot execute — proposal missing id or ask_price', prop);
+      isBuying=false; buyPendingAfterStream=false;
+      toast('❌ Invalid proposal — retrying…','r',3000);
+      setTimeout(()=>{if(!con&&authed)updateProposalStream();},1000);
+      return;
+    }
+    // Double-check we're still connected and authorized
+    if(!ws||ws.readyState!==1||!authed||!activeToken){
+      isBuying=false; buyPendingAfterStream=false;
+      toast('⚠️ Not connected — cannot place trade','r',4000);
+      return;
+    }
+    // Double-check no active contract
+    if(con&&con.realId){
+      isBuying=false;
+      toast('⚠️ Already in a trade','y',3000);
+      return;
+    }
+
     isBuying=true;
     buyPendingAfterStream=false;
     pendingProposal=prop;
     window._buyStartTime=now();
+    window._lastEntryFromAI=!!fromAI;
 
+    // Determine if this is a demo or real account
+    const acct=accountList.find(a=>a.loginid===activeLoginid);
+    const isVirtual=acct?!!acct.is_virtual:true;
     const label=fromAI?'🤖 AI Sniper':'🚀 Manual';
-    console.log('[Deriv] Executing buy from proposal:',{id:prop.id,ask_price:prop.ask_price,sym:prop.sym,gr:prop.gr});
 
-    // Create optimistic contract object immediately
+    console.log('[Deriv] Placing buy order:', {
+      proposal_id: prop.id,
+      ask_price: prop.ask_price,
+      symbol: prop.sym,
+      growth_rate: prop.gr,
+      account: activeLoginid,
+      is_demo: isVirtual,
+      currency: userCurrency
+    });
+
+    // Stop proposal stream while buying
+    stopProposalStream();
+
+    // Create pending contract object (realId=null until Deriv confirms)
     con={
-      entry:parseFloat(prop.spot),
+      entry:parseFloat(prop.spot)||prevP,
       upper:parseFloat(prop.barrier),
       lower:parseFloat(prop.low_barrier),
       ticks:0,
@@ -2677,29 +2668,30 @@ function _executeBuyFromProposal(prop, fromAI){
       pnl:0,
       payout:parseFloat(prop.ask_price),
       start:now(),
-      byAI:!!(window._lastEntryFromAI),
-      realId:null,
-      isReal:true
+      byAI:!!fromAI,
+      realId:null,      // Will be set when Deriv confirms
+      isReal:!isVirtual
     };
-    ticksHeld=0; drawBarriers(); updateConUI(); $('exitMeter').classList.add('on');
-    toast(label+' EXECUTING…','g',2000);
+    ticksHeld=0;
+    drawBarriers();
+    updateConUI();
+    $('exitMeter').classList.add('on');
+    toast(label+' — buying on Deriv…','g',3000);
 
-    // Stop proposal stream while in trade
-    stopProposalStream();
+    // Send the actual buy command to Deriv using the authenticated session
+    send({buy:prop.id, price:parseFloat(prop.ask_price)});
 
-    // Send buy command
-    send({buy:prop.id,price:parseFloat(prop.ask_price)});
-
-    // Safety timer: if buy not confirmed in 10s, reset
+    // Safety: if no buy confirmation in 12s, cancel the pending state
     if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);}
     window._buySafetyTimer=setTimeout(()=>{
       if(con&&!con.realId){
-        logError('Buy confirmation timeout',{symbol:sym,gr,account:activeLoginid});
-        isBuying=false; pendingProposal=null; con=null; clearBarriers(); renderNoContract();
-        toast('⚠️ Buy not confirmed — reconnecting…','y',5000);
-        reconnDelay=800; connect();
+        console.error('[Buy] No confirmation from Deriv after 12s');
+        isBuying=false; pendingProposal=null;
+        con=null; clearBarriers(); renderNoContract();
+        toast('⚠️ No buy confirmation — please try again','r',5000);
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},500);
       }
-    },10000);
+    },12000);
 }
 
 // ═══════════════════════════════════════════
@@ -2709,39 +2701,49 @@ function closeContract(reason,fromAI){
     if(!con)return;
     const stk = con.stake;
     const tks = con.ticks;
-    const byAI = con.byAI, realId = con.realId, isReal = con.isReal;
+    const byAI = con.byAI;
+    const realId = con.realId;
 
-    const won = !['Deriv:lost', 'KO'].includes(reason) && !reason.includes('lost') && !reason.includes('KO');
-    
-    let finalProfit = won ? parseFloat((con.pnl || 0).toFixed(2)) : -stk;
-    let finalPayout = won ? parseFloat((con.payout || stk).toFixed(2)) : 0;
+    // Proper win detection:
+    // Deriv:won or Deriv:sold = won (server confirmed)
+    // KO or Deriv:lost = lost (knocked out)
+    // Manual exit with positive pnl = won
+    const isKO = reason==='KO'||reason==='Deriv:lost'||reason.includes('KO')||reason.includes('lost');
+    const isDerivSold = reason==='Deriv:sold'||reason==='Deriv:won';
+    const won = isDerivSold ? (con.pnl>=0) : !isKO && con.pnl > 0;
 
-    if(byAI || fromAI){
-      if(won) aiWins++; else aiLoss++;
+    let finalProfit = won ? parseFloat((con.pnl||0).toFixed(2)) : parseFloat((-stk).toFixed(2));
+    let finalPayout = won ? parseFloat((con.payout||stk).toFixed(2)) : 0;
+
+    if(byAI||fromAI){
+      if(won){aiWins++;}else{aiLoss++;}
       aiTrades++;
-      aiPnl = parseFloat((aiPnl + finalProfit).toFixed(2));
-      addHistItem({won, pnl: finalProfit, reason, ticks: tks});
-      if(won) showFlash('flashWin', 'WIN +$' + finalProfit.toFixed(2) + ' (' + tks + 't)', 2500);
+      aiPnl=parseFloat((aiPnl+finalProfit).toFixed(2));
+      addHistItem({won,pnl:finalProfit,reason,ticks:tks});
+      if(won) showFlash('flashWin','WIN +$'+Math.abs(finalProfit).toFixed(2)+' ('+tks+'t)',2500);
     }
 
-    // Always send sell to Deriv if we have a real contract ID (real or demo account)
+    // Always send sell to Deriv if we have a real confirmed contract ID
+    // and it wasn't already closed by Deriv (Deriv:lost/sold means server already closed it)
     if(realId && !reason.startsWith('Deriv:')){
-      console.log('[Deriv] Selling contract:', realId, '| Reason:', reason);
-      send({sell: realId, price: 0});
+      console.log('[Deriv] Sending sell for contract:',realId,'reason:',reason);
+      send({sell:realId, price:0});
     }
-    // Request balance refresh after settlement
-    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 1500);
-    setTimeout(() => { if(ws && ws.readyState === 1) send({balance: 1}); }, 4000);
+
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},4000);
 
     isBuying=false; con=null; clearBarriers();
     buyPendingAfterStream=false; buyFromAIPending=false;
     exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
     renderNoContract(); resetBarrierUI();
-    $('sTicks').textContent='0'; $('sPnl').textContent='$0.00'; $('sPnl').style.color='var(--text)'; $('sPayout').textContent='$0.00';
-    toast((won?'✅ WIN +$'+finalProfit.toFixed(2):'❌ LOSS -$'+stk.toFixed(2))+' | '+reason,won?'g':'r',5000);
-    // Restart proposal stream after contract ends
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
-  }
+    phase='HUNTING'; exitingNow=false; updatePhaseUI();
+    $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+    const msg=won?'✅ WIN +$'+Math.abs(finalProfit).toFixed(2):'❌ LOSS -$'+Math.abs(stk).toFixed(2);
+    toast(msg+' | '+reason, won?'g':'r', 5000);
+    // Restart proposal stream after a short pause
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
+}
 
 // ═══════════════════════════════════════════
 // KNOCK OUT — barrier physically hit
