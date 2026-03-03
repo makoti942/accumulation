@@ -1164,13 +1164,14 @@ function handle(d){
     send({portfolio:1,contract_type:['ACCU']});
     // Re-subscribe all ticks
     ALL_SYMS.forEach(s=>send({ticks:s.sym,subscribe:1}));
-    // Request fresh balance and re-subscribe to balance updates
-    send({balance:1,subscribe:1});
+    // Eagerly fetch contracts_for EVERY symbol so cache is warm before first trade
+    ALL_SYMS.forEach((s,i)=>setTimeout(()=>requestContractsFor(s.sym),i*120));
+    // Request fresh balance
     setTimeout(()=>send({balance:1}),500);
-    // Start proposal stream after auth with proper delay to avoid AlreadySubscribed
+    // Start proposal stream after contracts cache has time to populate
     setTimeout(()=>{
       if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
-    },2000);
+    },2500);
     const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
     toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
     return;
@@ -1209,25 +1210,42 @@ function handle(d){
   }
   if(t==='contracts_for'){
     try{
+      // Use the symbol from the request echo, not the current active sym
+      // (they can differ if user switched symbols while the request was in flight)
+      const reqSym = (d.echo_req && d.echo_req.contracts_for) ? d.echo_req.contracts_for : sym;
       const cf=d.contracts_for||{};
       const rows=Array.isArray(cf.available)?cf.available:[];
       let acc=rows.find(x=>x.contract_type==='ACCU');
       if(!acc){
-        contractsCache[sym]={supportsAccu:false,allowedGrowths:[]};
+        contractsCache[reqSym]={supportsAccu:false,allowedGrowths:[]};
+        // If the active sym also has no cache yet, mark it too to avoid blocking
+        if(reqSym===sym) console.warn('[ContractsFor] ACCU not listed for',reqSym);
         return;
       }
       let growths=[];
-      const grf=acc.growth_rate||acc.growth||acc.growth_rate_range||{};
-      if(Array.isArray(grf.options)) growths=grf.options.map(o=>Math.round(parseFloat((o.value??o))*100)).filter(x=>!isNaN(x));
-      else if(Array.isArray(grf.values)) growths=grf.values.map(v=>Math.round(parseFloat(v)*100)).filter(x=>!isNaN(x));
+      const grf=acc.growth_rate_range||acc.growth_rate||acc.growth||{};
+      if(Array.isArray(grf.options)) growths=grf.options.map(o=>Math.round(parseFloat((o.value??o))*100)).filter(x=>!isNaN(x)&&x>=1&&x<=5);
+      else if(Array.isArray(grf.values)) growths=grf.values.map(v=>Math.round(parseFloat(v)*100)).filter(x=>!isNaN(x)&&x>=1&&x<=5);
       else if(grf.min!=null&&grf.max!=null){
-        const mn=Math.round(parseFloat(grf.min)*100),mx=Math.round(parseFloat(grf.max)*100);
+        const mn=Math.max(1,Math.round(parseFloat(grf.min)*100)),mx=Math.min(5,Math.round(parseFloat(grf.max)*100));
         for(let r=mn;r<=mx;r++)growths.push(r);
       }
-      growths=growths.filter(x=>x>=1&&x<=5);
-      if(!growths.length) growths=[2,3,1,4,5];
-      contractsCache[sym]={supportsAccu:true,allowedGrowths:[...new Set(growths)]};
-    }catch(e){}
+      // Deriv sometimes returns growth as a plain number like 0.01, 0.02 etc
+      if(!growths.length && acc.growth_rate && typeof acc.growth_rate==='number'){
+        const g=Math.round(acc.growth_rate*100);
+        if(g>=1&&g<=5) growths=[g];
+      }
+      if(!growths.length) growths=[1,2,3,4,5];
+      contractsCache[reqSym]={supportsAccu:true,allowedGrowths:[...new Set(growths)]};
+      console.log('[ContractsFor]',reqSym,'allowedGrowths:',contractsCache[reqSym].allowedGrowths);
+      // If this is our active symbol and current gr is not in allowed list, auto-switch gr
+      if(reqSym===sym && !contractsCache[reqSym].allowedGrowths.includes(gr)){
+        gr=contractsCache[reqSym].allowedGrowths[0]||2;
+        setGrowthActiveButton();
+        // Restart proposal stream with corrected growth rate
+        if(!con&&authed&&ws&&ws.readyState===1) setTimeout(updateProposalStream,300);
+      }
+    }catch(e){console.error('[ContractsFor] parse error:',e);}
     return;
   }
   if(t==='history'){
@@ -1351,13 +1369,14 @@ function handle(d){
       return;
     }
     
-    // Validate barriers are present
+    // Validate barriers are present — if missing, this growth rate isn't giving proper data
     if(!prop.barrier||!prop.low_barrier){
-      console.warn('[Deriv] Proposal without barriers — retrying alternative growth.');
-      if(buyPendingAfterStream){isBuying=false;buyPendingAfterStream=false;}
-      proposalStreamActive=false;
+      console.warn('[Deriv] Proposal returned without barriers — trying alternative growth. prop:',JSON.stringify({id:prop.id,barrier:prop.barrier,low_barrier:prop.low_barrier,sym,gr}));
+      isBuying=false; buyPendingAfterStream=false;
+      proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
+      if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
       requestContractsFor(sym);
-      scheduleAlternativeGrowth();
+      setTimeout(()=>scheduleAlternativeGrowth(), 300);
       return;
     }
     
@@ -2185,18 +2204,27 @@ function switchSym(newSym,newDp){
   tickBuf=[];priceHist=[];prevP=null;hi=-Infinity;lo=Infinity;
   $('tickFeed').innerHTML='';$('sbSym').textContent=sym;
   updatePatternUI(sym);
+  // Reset growth retry so new symbol gets a clean slate
+  growthRetry=null;
+  // Auto-correct gr if cache already has data for this symbol
+  const newCache=contractsCache[sym];
+  if(newCache&&newCache.supportsAccu&&newCache.allowedGrowths&&newCache.allowedGrowths.length){
+    if(!newCache.allowedGrowths.includes(gr)){
+      gr=newCache.allowedGrowths[0];
+      setGrowthActiveButton();
+    }
+  }
   // Stop any active proposal stream for old symbol
   stopProposalStream();
   // Reset buying state on symbol switch
-  if(!con){isBuying=false;buyPendingAfterStream=false;}
+  if(!con){isBuying=false;buyPendingAfterStream=false;latestProposal=null;}
   if(ws&&ws.readyState===1){
     ws.send(JSON.stringify({forget_all:'ticks'}));
-    // Request 100 historical ticks immediately
     send({ticks_history:sym,count:100,end:'latest',style:'ticks'});
     setTimeout(()=>{if(ws&&ws.readyState===1)ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));},400);
     setTimeout(()=>{requestContractsFor(sym);},200);
-    // Start fresh proposal stream for new symbol after delay
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},900);
+    // Give contracts_for time to arrive before starting proposal stream
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1200);
   }
 }
 function requestContractsFor(sSymbol){
@@ -2217,7 +2245,7 @@ function scheduleAlternativeGrowth(){
   if(growthLock){
     console.warn('[GrowthLock] Alternative growth blocked by user lock.');
     isBuying=false; buyPendingAfterStream=false;
-    toast('❌ Error: Growth rate '+gr+'% not available on '+sym,'r',5000);
+    toast('❌ Growth rate '+gr+'% not available on '+sym,'r',5000);
     return;
   }
   const allowed=getAllowedGrowths(sym);
@@ -2236,17 +2264,22 @@ function scheduleAlternativeGrowth(){
       if(next){
         growthRetry.triedSymbols.add(next);
         const info=ALL_SYMS.find(s=>s.sym===next);
+        isBuying=false; buyPendingAfterStream=false;
         switchSym(next,info?info.dp:3);
         requestContractsFor(next);
         growthRetry.sym=next;
         growthRetry.tried=new Set();
         growthRetry.count=0;
-        setTimeout(()=>scheduleAlternativeGrowth(),350);
+        // Wait for contracts_for to arrive before retrying
+        setTimeout(()=>{
+          if(!con&&!isBuying) scheduleAlternativeGrowth();
+        },800);
         return;
       }
     }
-    toast('ACCU not available — scanning','r',6000);
-    isBuying=false;con=null;clearBarriers();renderNoContract();
+    toast('ACCU not available on any symbol — scanning…','r',6000);
+    isBuying=false; buyPendingAfterStream=false;
+    con=null;clearBarriers();renderNoContract();
     doVolScanAndSwitch(true);
     return;
   }
@@ -2254,18 +2287,29 @@ function scheduleAlternativeGrowth(){
   growthRetry.tried.add(gr);
   const candidate=allowed.find(r=>!growthRetry.tried.has(r));
   if(!candidate){
-    if(forceExec){
+    if(forceExec&&allowed.length>0){
+      // All growths tried — move to next symbol
+      growthRetry.count=allowed.length;
       scheduleAlternativeGrowth();
       return;
     }
-    toast('ACCU not available on '+sym+' — scanning','r',6000);
-    isBuying=false;con=null;clearBarriers();renderNoContract();
+    toast('ACCU not available on '+sym+' — scanning…','r',6000);
+    isBuying=false; buyPendingAfterStream=false;
+    con=null;clearBarriers();renderNoContract();
     doVolScanAndSwitch(true);
     return;
   }
   gr=candidate;
   setGrowthActiveButton();
-  setTimeout(()=>buyContract(growthRetry.fromAI),200);
+  // CRITICAL: invalidate stale proposal cache so buyContract requests a fresh one with new gr
+  latestProposal=null;
+  proposalStreamActive=false;
+  proposalStreamReqId=null;
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({forget_all:'proposal'}));
+  console.log('[AltGrowth] Retrying with gr='+gr+'% on '+sym);
+  setTimeout(()=>{
+    if(!con) buyContract(growthRetry.fromAI);
+  },400);
 }
 
     // ═══════════════════════════════════════════
@@ -2273,6 +2317,8 @@ function scheduleAlternativeGrowth(){
     // ═══════════════════════════════════════════
     function runAI(price){
       if(con || isBuying || aiCool) return;
+  const buf=tickBuf, n=tickBuf.length;
+  if(n<5) return; // not enough data yet
   const sh=Math.min(8,n),lg=Math.min(50,n);
   const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
   const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
@@ -2395,19 +2441,34 @@ function stopProposalStream(){
 
 function updateProposalStream(){
   if(!ws||ws.readyState!==1||!authed)return;
-  if(con)return; // Stop streaming when in trade to save bandwidth
+  if(con)return;
   
   const currentStake=parseFloat($('stkInput').value)||stake;
   if(!currentStake||currentStake<=0)return;
 
-  // Validate growth/symbol first
+  // If we have a firm "not supported" answer, skip
   const cc=contractsCache[sym];
-  if(cc&&cc.supportsAccu===false)return;
+  if(cc&&cc.supportsAccu===false){
+    console.warn('[ProposalStream] ACCU not supported on',sym,'— skipping stream');
+    return;
+  }
+
+  // If no cache yet, request it and retry after it arrives
+  if(!cc){
+    requestContractsFor(sym);
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
+    return;
+  }
+
+  // Auto-correct gr if it's not in the allowed list
   const allowed=getAllowedGrowths(sym);
-  if(allowed.indexOf(gr)===-1)return;
+  if(allowed.length && !allowed.includes(gr)){
+    gr=allowed[0];
+    setGrowthActiveButton();
+    console.log('[ProposalStream] Auto-corrected gr to',gr,'for',sym);
+  }
 
   // CRITICAL: Always forget_all first, then wait before subscribing
-  // This prevents the AlreadySubscribed error
   proposalStreamActive=false;
   proposalStreamReqId=null;
   latestProposal=null;
@@ -2416,7 +2477,6 @@ function updateProposalStream(){
   
   ws.send(JSON.stringify({forget_all:'proposal'}));
   
-  // Wait 300ms after forget_all before subscribing to ensure server processes it
   proposalStreamTimer=setTimeout(()=>{
     if(!ws||ws.readyState!==1||!authed||con)return;
     proposalReqCounter++;
@@ -2439,11 +2499,11 @@ function updateProposalStream(){
     console.log('[ProposalStream] Subscribing:',{sym,gr,reqId:thisReqId});
     ws.send(JSON.stringify(payload));
     
-    // Schedule periodic refresh of the stream every 25s to keep it alive
+    // Periodic refresh every 25s to keep stream alive
     proposalRetryTimer=setTimeout(()=>{
       if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
     },25000);
-  },300);
+  },400);
 }
 
 // ═══════════════════════════════════════════
@@ -2460,132 +2520,143 @@ function updateProposalStream(){
           showLogin(); return;
         }
         if(con){toast('Trade already active','r');return;}
-        
-        // Safety Reset: Prevent stuck "Trade Pending"
-        const bStart = window._buyStartTime || 0;
-        if(isBuying && (now() - bStart > 10000)){
-            isBuying = false;
-            console.log('[Buy] Safety reset for stuck pending state');
-        }
+
+        // Unified isBuying guard with stuck-state recovery
         if(isBuying){
-            console.log('[Buy] Blocked: isBuying=true'); 
+          const bStart = window._buyStartTime || 0;
+          if(now() - bStart > 12000){
+            console.warn('[Buy] isBuying stuck >12s, force-resetting.');
+            isBuying=false; pendingProposal=null; proposalReqId=null;
+            buyPendingAfterStream=false; buyFromAIPending=false;
+            if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
+            if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
+          } else {
+            console.log('[Buy] Blocked: isBuying=true');
             return;
+          }
         }
         window._buyStartTime = now();
-
-        // Check if Accumulator is actually available
-        const cache = contractsCache[sym];
-        if(cache && cache.supportsAccu === false){
-            toast('❌ Accu not available on '+sym, 'r');
-            return;
-        }
-
-        // Ensure we have current contract possibility
-        const allowed = getAllowedGrowths(sym);
-        if(!allowed.includes(gr)){
-          gr = allowed[0] || 3;
-          setGrowthActiveButton();
-        }
 
         if(!prevP){
           toast('Waiting for price sync…','y');
           return;
         }
-    if(isBuying){
-      // isBuying stuck? Check if it's been more than 15s with no result
-      if(window._buyStartTime && (now()-window._buyStartTime)>15000){
-        console.warn('[BuyContract] isBuying stuck >15s, resetting.');
-        isBuying=false; pendingProposal=null; proposalReqId=null;
-        buyPendingAfterStream=false; buyFromAIPending=false;
-        if(window._proposalSafetyTimer){clearTimeout(window._proposalSafetyTimer);window._proposalSafetyTimer=null;}
-        if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);window._buySafetyTimer=null;}
-      } else {
-        toast('⚠️ Trade pending... please wait','y',3000); return;
-      }
-    }
 
-    window._lastEntryFromAI=!!fromAI;
-    window._buyStartTime=now();
-    const currentStake=parseFloat($('stkInput').value)||stake;
-    if(!currentStake||currentStake<=0){
-      toast('⚠️ Invalid stake amount','r',4000); return;
-    }
-    const validSymbol=ALL_SYMS.find(s=>s.sym===sym);
-    if(!validSymbol){
-      toast('❌ Invalid symbol: '+sym+' not in supported list','r',5000); return;
-    }
-    if(gr<1||gr>5){
-      toast('❌ Invalid growth rate: '+gr+'% (must be 1-5%)','r',5000); return;
-    }
-
-    const nowTs=now();
-    // Use cached proposal if fresh (<3000ms) and matching current parameters
-    if(latestProposal && (nowTs-latestProposal.ts<3000) && latestProposal.sym===sym && latestProposal.gr===gr){
-      _executeBuyFromProposal(latestProposal, fromAI);
-      return;
-    }
-
-    // Stream not ready or stale — request a fresh proposal and execute on response
-    console.log('[BuyContract] No fresh proposal cached. Requesting fresh proposal for instant buy.');
-    isBuying=true;
-    buyPendingAfterStream=true;
-    buyFromAIPending=!!fromAI;
-
-    // Stop any existing stream, then request a fresh one-shot proposal
-    if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
-    if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
-    proposalStreamActive=false;
-    proposalStreamReqId=null;
-
-    // forget_all first, then send fresh proposal after short delay
-    if(ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({forget_all:'proposal'}));
-      // Debounce and clear state to avoid AlreadySubscribed
-      proposalStreamActive = false;
-      proposalStreamReqId = null;
-      latestProposal = null;
-    }
-
-    setTimeout(()=>{
-      if(!isBuying||!buyPendingAfterStream)return; // cancelled
-      if(!ws||ws.readyState!==1||!authed){
-        isBuying=false; buyPendingAfterStream=false;
-        toast('⚠️ Connection lost — reconnecting…','r',4000);
-        reconnDelay=800; connect(); return;
-      }
-      proposalReqCounter++;
-      const thisReqId=proposalReqCounter;
-      proposalReqId=thisReqId;
-      proposalStreamReqId=thisReqId;
-      proposalStreamActive=true;
-
-      const tradeCurrency=userCurrency||'USD';
-      const proposalPayload={
-        proposal:1,
-        req_id:thisReqId,
-        contract_type:'ACCU',
-        symbol:sym,
-        amount:currentStake,
-        basis:'stake',
-        growth_rate:parseFloat((gr/100).toFixed(3)),
-        currency:tradeCurrency,
-        subscribe:1
-      };
-      console.log('[BuyContract] Sending fresh proposal request:',{sym,gr,reqId:thisReqId});
-      send(proposalPayload);
-
-      // Safety timer: if no proposal arrives in 10s, reset and reconnect
-      window._proposalSafetyTimer=setTimeout(()=>{
-        if(isBuying&&buyPendingAfterStream&&proposalReqId===thisReqId&&(!con||!con.realId)){
-          console.error('[BuyContract] Proposal timeout after 10s.');
-          isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
-          proposalStreamActive=false; proposalStreamReqId=null;
-          toast('⚠️ Proposal timeout — reconnecting…','r',5000);
-          reconnDelay=800; connect();
+        const currentStake=parseFloat($('stkInput').value)||stake;
+        if(!currentStake||currentStake<=0){
+          toast('⚠️ Invalid stake amount','r',4000); return;
         }
-      },10000);
-    },1000);
-}
+
+        // Validate symbol
+        const validSymbol=ALL_SYMS.find(s=>s.sym===sym);
+        if(!validSymbol){
+          toast('❌ Invalid symbol: '+sym,'r',5000); return;
+        }
+
+        // Check contracts cache — if not loaded yet, fetch and retry
+        const cache = contractsCache[sym];
+        if(!cache){
+          console.log('[Buy] Contracts cache missing for',sym,'— fetching and retrying.');
+          isBuying=true;
+          buyPendingAfterStream=true;
+          buyFromAIPending=!!fromAI;
+          window._lastEntryFromAI=!!fromAI;
+          requestContractsFor(sym);
+          setTimeout(()=>{
+            if(isBuying&&buyPendingAfterStream){
+              buyPendingAfterStream=false;
+              buyContract(fromAI);
+            }
+          },1500);
+          return;
+        }
+        if(cache.supportsAccu===false){
+          toast('❌ ACCU not available on '+sym+' — switching…','r',4000);
+          isBuying=false;
+          // Try to find a working symbol
+          const fallback=ALL_SYMS.find(s=>!contractsCache[s.sym]||contractsCache[s.sym].supportsAccu!==false);
+          if(fallback&&fallback.sym!==sym){switchSym(fallback.sym,fallback.dp);}
+          return;
+        }
+
+        // Auto-correct growth rate
+        const allowed = getAllowedGrowths(sym);
+        if(allowed.length && !allowed.includes(gr)){
+          gr = allowed[0];
+          setGrowthActiveButton();
+          console.log('[Buy] Auto-corrected gr to',gr,'for',sym);
+        }
+        if(gr<1||gr>5){
+          toast('❌ Invalid growth rate: '+gr+'%','r',5000); return;
+        }
+
+        window._lastEntryFromAI=!!fromAI;
+
+        // Use cached proposal if fresh (<4s) and matching current parameters
+        const nowTs=now();
+        if(latestProposal && (nowTs-latestProposal.ts<4000) && latestProposal.sym===sym && latestProposal.gr===gr){
+          console.log('[Buy] Using cached proposal, age:'+(nowTs-latestProposal.ts)+'ms');
+          _executeBuyFromProposal(latestProposal, fromAI);
+          return;
+        }
+
+        // No fresh proposal — request one and execute on arrival
+        console.log('[BuyContract] No fresh proposal. Requesting one now.');
+        isBuying=true;
+        buyPendingAfterStream=true;
+        buyFromAIPending=!!fromAI;
+
+        if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+        if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+        proposalStreamActive=false;
+        proposalStreamReqId=null;
+
+        if(ws && ws.readyState === 1){
+          ws.send(JSON.stringify({forget_all:'proposal'}));
+          proposalStreamActive=false;
+          proposalStreamReqId=null;
+          latestProposal=null;
+        }
+
+        setTimeout(()=>{
+          if(!isBuying||!buyPendingAfterStream)return;
+          if(!ws||ws.readyState!==1||!authed){
+            isBuying=false; buyPendingAfterStream=false;
+            toast('⚠️ Connection lost — reconnecting…','r',4000);
+            reconnDelay=800; connect(); return;
+          }
+          proposalReqCounter++;
+          const thisReqId=proposalReqCounter;
+          proposalReqId=thisReqId;
+          proposalStreamReqId=thisReqId;
+          proposalStreamActive=true;
+
+          const tradeCurrency=userCurrency||'USD';
+          const proposalPayload={
+            proposal:1,
+            req_id:thisReqId,
+            contract_type:'ACCU',
+            symbol:sym,
+            amount:currentStake,
+            basis:'stake',
+            growth_rate:parseFloat((gr/100).toFixed(3)),
+            currency:tradeCurrency,
+            subscribe:1
+          };
+          console.log('[BuyContract] Sending proposal request:',{sym,gr,stake:currentStake,reqId:thisReqId});
+          send(proposalPayload);
+
+          window._proposalSafetyTimer=setTimeout(()=>{
+            if(isBuying&&buyPendingAfterStream&&proposalReqId===thisReqId&&(!con||!con.realId)){
+              console.error('[BuyContract] Proposal timeout after 12s — reconnecting.');
+              isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
+              proposalStreamActive=false; proposalStreamReqId=null;
+              toast('⚠️ Proposal timeout — reconnecting…','r',5000);
+              reconnDelay=800; connect();
+            }
+          },12000);
+        },600);
+    }
 
 function _executeBuyFromProposal(prop, fromAI){
     isBuying=true;
