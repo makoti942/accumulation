@@ -503,7 +503,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
     <div class="login-logo">🎯</div>
     <div class="login-title">Deriv Accumulator AI Sniper</div>
     <div class="login-sub">Connect your Deriv account (Real or Demo). AI Sniper analyzes every tick and executes real trades on your Deriv account.</div>
-    <div class="login-sub-msg" style="color:var(--gold);font-size:10px;margin-bottom:8px;">⚡ All trades execute on your actual Deriv account</div>
+    <div class="login-sub-msg" style="color:var(--gold);font-size:10px;margin-bottom:8px;">⚡ Login to access both your Real and Demo accounts</div>
     <div class="login-features">
       <div class="login-feat"><div class="login-feat-icon">🤖</div><div class="login-feat-text"><div class="t">AI Sniper Engine</div><div class="s">100-tick pattern analysis</div></div></div>
       <div class="login-feat"><div class="login-feat-icon">🎤</div><div class="login-feat-text"><div class="t">Voice AI — ARIA</div><div class="s">English & Kiswahili</div></div></div>
@@ -511,14 +511,10 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
       <div class="login-feat"><div class="login-feat-icon">💰</div><div class="login-feat-text"><div class="t">Zero Loss Target</div><div class="s">Sniper exit before break</div></div></div>
     </div>
     <a class="btn-login" id="loginBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top">
-      <svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="48" fill="#CC2936"/><path d="M28 72 L50 28 L72 72 Z" fill="white"/></svg>
-      Login with Deriv Real Account
-    </a>
-    <div class="login-divider"><span>OR</span></div>
-    <a class="btn-login" id="demoBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top" style="background:linear-gradient(135deg,#1e3a5f,#1a2a4a);font-size:13px;text-decoration:none;">
-      🎮 Login with Deriv Demo Account
-    </a>
-    <div class="login-note">
+        <svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="48" fill="#CC2936"/><path d="M28 72 L50 28 L72 72 Z" fill="white"/></svg>
+        Login with Deriv
+      </a>
+      <div class="login-note">
       Both Real and Demo accounts are supported. By connecting you agree to Deriv's <a href="https://deriv.com/terms-and-conditions" target="_blank">Terms</a>. App ID 129093
     </div>
   </div>
@@ -974,23 +970,21 @@ function getStoredToken(loginid){
     const{tokens,first,firstLoginid}=parseOAuthURL();
     if(first&&firstLoginid){
       console.log('[Init] OAuth redirect detected. Tokens:', Object.keys(tokens));
-      Object.keys(tokens).forEach(lid=>{tokenStore[lid]=tokens[lid];});
+      Object.keys(tokens).forEach(lid=>{
+        tokenStore[lid]={token: tokens[lid].token, currency: tokens[lid].currency || 'USD'};
+      });
       saveTokenStore();
       activeToken=first;activeLoginid=firstLoginid;
       lsSet('deriv_active',firstLoginid);
       
-      // Clear ALL URL parameters to prevent re-parsing stale data on refresh
       try{
         const url = new URL(window.location.origin + window.location.pathname);
         window.history.replaceState({}, '', url.toString());
-        console.log('[Init] URL cleaned, proceeding to boot.');
-      }catch(e){console.error('[Init] History API error:', e);}
+      }catch(e){}
       
-      // Mark as authenticated locally before boot to avoid race conditions
       authed = true;
-      window._authRetried = false;
       hideLogin();
-      return; // CRITICAL: Return here!
+      return; 
     }
     
     const storedActive=lsGet('deriv_active')||'';
@@ -1004,22 +998,17 @@ function getStoredToken(loginid){
       }
     }
     
-    const keys=Object.keys(tokenStore).filter(k=>k&&k.length>2);
-    let foundValid = false;
-    for(let i=0;i<keys.length;i++){
-      const tok=getStoredToken(keys[i]);
-      if(tok&&tok.length>10){
-        activeToken=tok;
-        activeLoginid=keys[i];
-        lsSet('deriv_active',keys[i]);
-        foundValid = true;
-        break;
+    const keys=Object.keys(tokenStore);
+    if(keys.length > 0){
+      const firstKey = keys[0];
+      const tok = getStoredToken(firstKey);
+      if(tok && tok.length > 10){
+          activeToken = tok;
+          activeLoginid = firstKey;
+          lsSet('deriv_active', firstKey);
+          hideLogin();
+          return;
       }
-    }
-    
-    if (foundValid) {
-      hideLogin();
-      return;
     }
     showLogin();
   })();
@@ -1063,61 +1052,26 @@ function bootApp(){
 // WEBSOCKET
 // ═══════════════════════════════════════════
 function connect(){
-  clearTimeout(reconnTimer);clearTimeout(connTO);
-  clearInterval(pingTimer);clearInterval(heartbeatTimer);
-  if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}ws=null;}
-  wsAlive=false;setDot('rc');$('connBanner').classList.add('show');
-  try{ws=new WebSocket(WS_URL);}catch(e){schedReconn();return;}
-  connTO=setTimeout(()=>{if(!wsAlive){try{ws&&ws.close();}catch(e){}schedReconn();}},12000);
-  lastMsgTime=now();
-  ws.onopen=()=>{
-    clearTimeout(connTO);wsAlive=true;reconnDelay=800;lastMsgTime=now();
-    setDot('on');$('connBanner').classList.remove('show');
-    // Reset ALL stale buying/proposal state from previous connection
-    isBuying=false; pendingProposal=null; proposalReqId=null;
-    proposalStreamActive=false; buyPendingAfterStream=false; buyFromAIPending=false;
-    latestProposal=null; proposalStreamReqId=null; prevP=null; tickBuf=[]; priceHist=[]; hi=-Infinity; lo=-Infinity;
-    if(window._proposalSafetyTimer){ clearTimeout(window._proposalSafetyTimer); window._proposalSafetyTimer=null; }
-    if(window._buySafetyTimer){ clearTimeout(window._buySafetyTimer); window._buySafetyTimer=null; }
-    if(proposalRetryTimer){ clearTimeout(proposalRetryTimer); proposalRetryTimer=null; }
-    if(proposalStreamTimer){ clearTimeout(proposalStreamTimer); proposalStreamTimer=null; }
-    // Forget all stale subscriptions (ticks, proposals) from previous session
-    ws.send(JSON.stringify({forget_all:'proposal'}));
-    ws.send(JSON.stringify({forget_all:'ticks'}));
-    // Subscribe all symbols first
-    ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
-    // Authorize after short delay — session sync: auth MUST complete before any proposal is sent
-    if(activeToken)setTimeout(()=>{
-      if(ws&&ws.readyState===1){
-        console.log('[Deriv] Sending authorize request. Token length:', activeToken.length, 'Account:', activeLoginid);
-        window._authInProgress = true;
-        // Reset auth retry flag on new attempt
-        window._authRetried = false;
-        // Also clear URL here to ensure we don't re-parse on a refresh during auth
-        try{
-          const url = new URL(window.location.href);
-          if(url.search) {
-            url.search = '';
-            window.history.replaceState({},'',url.toString());
-          }
-        }catch(e){}
-        ws.send(JSON.stringify({authorize:activeToken}));
-        // Safety timeout to reset flag if no response
-        setTimeout(() => { window._authInProgress = false; }, 5000);
+    clearTimeout(reconnTimer);clearTimeout(connTO);
+    clearInterval(pingTimer);clearInterval(heartbeatTimer);
+    if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}ws=null;}
+    wsAlive=false;setDot('rc');
+    try{ws=new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=129093');}catch(e){schedReconn();return;}
+    connTO=setTimeout(()=>{if(!wsAlive){try{ws&&ws.close();}catch(e){}schedReconn();}},12000);
+    ws.onopen=()=>{
+      clearTimeout(connTO);wsAlive=true;reconnDelay=800;
+      setDot('on');
+      ALL_SYMS.forEach(s=>ws.send(JSON.stringify({ticks:s.sym,subscribe:1})));
+      if(activeToken){
+          console.log('[WS] Sending authorize for:', activeLoginid);
+          ws.send(JSON.stringify({authorize:activeToken}));
       }
-    },300);
-    pingTimer=setInterval(()=>{if(ws&&ws.readyState===1){pingT=now();ws.send(JSON.stringify({ping:1}));}else clearInterval(pingTimer);},5000);
-    heartbeatTimer=setInterval(()=>{
-      if(now()-lastMsgTime>25000){
-        if(ws&&ws.readyState===1)ws.send(JSON.stringify({ping:1}));
-        else{wsAlive=false;setDot('rc');schedReconn();}
-      }
-    },8000);
-  };
-  ws.onmessage=e=>{lastMsgTime=now();try{handle(JSON.parse(e.data));}catch(err){}};
-  ws.onerror=()=>{clearTimeout(connTO);wsAlive=false;setDot('err');};
-  ws.onclose=()=>{clearTimeout(connTO);clearInterval(pingTimer);clearInterval(heartbeatTimer);wsAlive=false;setDot('rc');$('connBanner').classList.add('show');schedReconn();};
-}
+      pingTimer=setInterval(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({ping:1}));},15000);
+    };
+    ws.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(err){}};
+    ws.onerror=()=>{wsAlive=false;setDot('err');};
+    ws.onclose=()=>{wsAlive=false;setDot('rc');schedReconn();};
+  }
 function schedReconn(){clearTimeout(reconnTimer);reconnTimer=setTimeout(()=>{reconnDelay=Math.min(reconnDelay*1.5,15000);connect();},reconnDelay);}
 function send(obj){
   if(ws&&ws.readyState===1){
