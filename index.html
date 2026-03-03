@@ -1483,7 +1483,13 @@ function handle(d){
           updateBalanceUI();
         }
       }
-      // Subscribe to contract P&L updates — this is how we get live pnl and settlement
+      // Stop any lingering proposal subscriptions now that buy is confirmed
+      ws.send(JSON.stringify({forget_all:'proposal'}));
+      proposalStreamActive=false; proposalStreamReqId=null; latestProposal=null;
+      if(proposalRetryTimer){clearTimeout(proposalRetryTimer);proposalRetryTimer=null;}
+      if(proposalStreamTimer){clearTimeout(proposalStreamTimer);proposalStreamTimer=null;}
+
+      // Subscribe to live contract P&L and settlement updates
       send({proposal_open_contract:1, contract_id:con.realId, subscribe:1});
       drawBarriers();
       updateConUI();
@@ -2597,15 +2603,8 @@ function updateProposalStream(){
 
         window._lastEntryFromAI=!!fromAI;
 
-        // Use cached proposal if fresh (<4s) and matching current parameters
-        const nowTs=now();
-        if(latestProposal && (nowTs-latestProposal.ts<4000) && latestProposal.sym===sym && latestProposal.gr===gr){
-          console.log('[Buy] Using cached proposal, age:'+(nowTs-latestProposal.ts)+'ms');
-          _executeBuyFromProposal(latestProposal, fromAI);
-          return;
-        }
-
-        // No fresh proposal — request one and execute on arrival
+        // NEVER reuse a cached proposal — Deriv proposal IDs expire in ~2 seconds.
+        // Always request a fresh one-shot proposal and buy immediately on response.
         console.log('[BuyContract] No fresh proposal. Requesting one now.');
         isBuying=true;
         buyPendingAfterStream=true;
@@ -2616,50 +2615,45 @@ function updateProposalStream(){
         proposalStreamActive=false;
         proposalStreamReqId=null;
 
-        if(ws && ws.readyState === 1){
-          ws.send(JSON.stringify({forget_all:'proposal'}));
-          proposalStreamActive=false;
-          proposalStreamReqId=null;
-          latestProposal=null;
-        }
+        // Cancel any existing proposal subscriptions on server
+        ws.send(JSON.stringify({forget_all:'proposal'}));
+        proposalStreamActive=false;
+        proposalStreamReqId=null;
+        latestProposal=null;
 
-        setTimeout(()=>{
-          if(!isBuying||!buyPendingAfterStream)return;
-          if(!ws||ws.readyState!==1||!authed){
-            isBuying=false; buyPendingAfterStream=false;
-            toast('⚠️ Connection lost — reconnecting…','r',4000);
-            reconnDelay=800; connect(); return;
+        // Request a ONE-SHOT proposal (no subscribe:1).
+        // When the response arrives, buyPendingAfterStream=true causes
+        // the proposal handler to IMMEDIATELY call _executeBuyFromProposal,
+        // which sends the buy with that fresh ID before it can expire.
+        proposalReqCounter++;
+        const thisReqId=proposalReqCounter;
+        proposalReqId=thisReqId;
+        proposalStreamReqId=thisReqId;
+
+        const proposalPayload={
+          proposal:1,
+          req_id:thisReqId,
+          contract_type:'ACCU',
+          symbol:sym,
+          amount:currentStake,
+          basis:'stake',
+          growth_rate:gr/100,
+          currency:userCurrency||'USD'
+          // NO subscribe:1 — one-shot keeps the ID alive until we buy it
+        };
+        console.log('[BuyContract] Requesting one-shot proposal:',proposalPayload);
+        ws.send(JSON.stringify(proposalPayload));
+
+        // Safety timeout: if no proposal response in 10s, give up
+        window._proposalSafetyTimer=setTimeout(()=>{
+          if(isBuying&&buyPendingAfterStream&&proposalReqId===thisReqId){
+            console.error('[BuyContract] Proposal never arrived after 10s');
+            isBuying=false; buyPendingAfterStream=false; proposalReqId=null;
+            proposalStreamActive=false; proposalStreamReqId=null;
+            toast('⚠️ No proposal from Deriv — check connection','r',5000);
+            setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
           }
-          proposalReqCounter++;
-          const thisReqId=proposalReqCounter;
-          proposalReqId=thisReqId;
-          proposalStreamReqId=thisReqId;
-          proposalStreamActive=true;
-
-          const proposalPayload={
-            proposal:1,
-            req_id:thisReqId,
-            contract_type:'ACCU',
-            symbol:sym,
-            amount:currentStake,
-            basis:'stake',
-            growth_rate:gr/100,   // decimal: 1%=0.01, 2%=0.02
-            currency:userCurrency||'USD',
-            subscribe:1
-          };
-          console.log('[BuyContract] Sending proposal request:',{sym,gr,stake:currentStake,reqId:thisReqId});
-          send(proposalPayload);
-
-          window._proposalSafetyTimer=setTimeout(()=>{
-            if(isBuying&&buyPendingAfterStream&&proposalReqId===thisReqId&&(!con||!con.realId)){
-              console.error('[BuyContract] Proposal timeout after 12s — reconnecting.');
-              isBuying=false; buyPendingAfterStream=false; pendingProposal=null; proposalReqId=null;
-              proposalStreamActive=false; proposalStreamReqId=null;
-              toast('⚠️ Proposal timeout — reconnecting…','r',5000);
-              reconnDelay=800; connect();
-            }
-          },12000);
-        },600);
+        },10000);
     }
 
 function _executeBuyFromProposal(prop, fromAI){
@@ -2694,18 +2688,19 @@ function _executeBuyFromProposal(prop, fromAI){
     const isVirtual=acct?!!acct.is_virtual:true;
     const label=fromAI?'🤖 AI Sniper':'🚀 Manual';
 
-    console.log('[Deriv] Placing buy order:', {
-      proposal_id: prop.id,
-      ask_price: prop.ask_price,
-      symbol: prop.sym,
-      growth_rate: prop.gr,
+    console.log('[Deriv] ▶ Sending BUY:', {
+      buy: prop.id,
+      price: prop.ask_price,
       account: activeLoginid,
-      is_demo: isVirtual,
-      currency: userCurrency
+      type: isVirtual?'DEMO':'REAL',
+      currency: userCurrency,
+      symbol: sym,
+      growth: gr+'%'
     });
 
-    // Stop proposal stream while buying
-    stopProposalStream();
+    // NOTE: Do NOT call stopProposalStream() here — that sends forget_all which
+    // immediately invalidates the proposal ID we're about to buy with.
+    // We stop the stream AFTER the buy is confirmed by Deriv (in the buy handler).
 
     // Create pending contract object (realId=null until Deriv confirms)
     con={
