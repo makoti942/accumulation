@@ -970,32 +970,40 @@ function getStoredToken(loginid){
 // INIT
 // ═══════════════════════════════════════════
 (function init(){
-  loadTokenStore();
-  const{tokens,first,firstLoginid}=parseOAuthURL();
-  if(first&&firstLoginid){
-    console.log('[Init] OAuth redirect detected. Tokens:', Object.keys(tokens));
-    Object.keys(tokens).forEach(lid=>{tokenStore[lid]=tokens[lid];});
-    saveTokenStore();
-    activeToken=first;activeLoginid=firstLoginid;
-    lsSet('deriv_active',firstLoginid);
+    loadTokenStore();
+    const{tokens,first,firstLoginid}=parseOAuthURL();
+    if(first&&firstLoginid){
+      console.log('[Init] OAuth redirect detected. Tokens:', Object.keys(tokens));
+      Object.keys(tokens).forEach(lid=>{tokenStore[lid]=tokens[lid];});
+      saveTokenStore();
+      activeToken=first;activeLoginid=firstLoginid;
+      lsSet('deriv_active',firstLoginid);
+      
+      // Clear ALL URL parameters to prevent re-parsing stale data on refresh
+      try{
+        const url = new URL(window.location.origin + window.location.pathname);
+        window.history.replaceState({}, '', url.toString());
+        console.log('[Init] URL cleaned, proceeding to boot.');
+      }catch(e){console.error('[Init] History API error:', e);}
+      
+      // Mark as authenticated locally before boot to avoid race conditions
+      authed = true;
+      window._authRetried = false;
+      hideLogin();
+      return; // CRITICAL: Return here!
+    }
     
-    // Clear ALL URL parameters to prevent re-parsing stale data on refresh
-    try{
-      const url = new URL(window.location.origin + window.location.pathname);
-      window.history.replaceState({}, '', url.toString());
-      console.log('[Init] URL cleaned, proceeding to boot.');
-    }catch(e){console.error('[Init] History API error:', e);}
-    
-    // Mark as authenticated locally before boot to avoid race conditions
-    authed = true;
-    window._authRetried = false;
-    hideLogin();
-  } else {
     const storedActive=lsGet('deriv_active')||'';
     if(storedActive&&storedActive.length>2){
       const tok=getStoredToken(storedActive);
-      if(tok&&tok.length>10){activeToken=tok;activeLoginid=storedActive;hideLogin();return;}
+      if(tok&&tok.length>10){
+        activeToken=tok;
+        activeLoginid=storedActive;
+        hideLogin();
+        return;
+      }
     }
+    
     const keys=Object.keys(tokenStore).filter(k=>k&&k.length>2);
     let foundValid = false;
     for(let i=0;i<keys.length;i++){
@@ -1008,13 +1016,13 @@ function getStoredToken(loginid){
         break;
       }
     }
+    
     if (foundValid) {
       hideLogin();
       return;
     }
     showLogin();
-  }
-})();
+  })();
 
 function showLogin(){$('loginOverlay').style.display='flex';}
 function hideLogin(){$('loginOverlay').style.display='none';bootApp();}
@@ -1125,62 +1133,30 @@ function send(obj){
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════
 function handle(d){
-  if(!d)return;
+    if(!d)return;
 
-  // ── GLOBAL ERROR HANDLER: Catch all Deriv error responses ──
-  // Handles cases where msg_type may be missing but error is present
+    // ── GLOBAL ERROR HANDLER: Catch all Deriv error responses ──
     if(d.error && !d.msg_type){
       const ec = d.error.code || 'UnknownError';
       const em = d.error.message || 'An unknown error occurred';
       
-      // Critical fix: Ignore "AuthorizationRequired" and "InvalidToken" errors
-      // that arrive as global errors while an authorization request is in flight.
+      // If we're already trying to authorize, ignore these noisy errors
       if(window._authInProgress && (ec === 'AuthorizationRequired' || ec === 'InvalidToken')){
-        console.log('[Deriv] Handshake in progress: ignoring global', ec);
         return;
       }
 
       if(ec === 'InvalidToken' || ec === 'AuthorizationRequired'){
-        console.warn('[Deriv] Global API error requiring re-auth:', ec, em);
-        
-        // If we have a token, try to re-authorize once before giving up
         if(activeToken && !window._authRetried) {
-            console.log('[Deriv] Attempting silent re-auth after global error');
             window._authRetried = true;
             window._authInProgress = true;
-            // Delay slightly to let the connection stabilize
             setTimeout(() => {
-                if(ws && ws.readyState === 1) {
-                  console.log('[Deriv] Sending re-auth request');
-                  ws.send(JSON.stringify({authorize:activeToken}));
-                }
+                if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize:activeToken}));
             }, 500);
-            // Safety timeout to reset flag if no response
-            setTimeout(() => { window._authInProgress = false; }, 5000);
             return;
         }
-
-        // If we already retried and still fail, it's a real logout
         authed = false; 
-        isBuying = false; 
-        pendingProposal = null;
-        
-        // Only show login if the token is definitely invalid or missing
-        if(!activeToken || ec === 'InvalidToken') {
-          console.warn('[Deriv] Session dead, showing login.');
-          showLogin();
-        }
+        if(!activeToken || ec === 'InvalidToken') showLogin();
         return; 
-      }
-      
-      const aiStatusEl = $('sigSub');
-      if(aiStatusEl) aiStatusEl.textContent = '⚠️ Deriv: ' + em;
-      
-      const statusBar = $('derivStatusBar');
-      if(statusBar){ 
-        statusBar.style.display='block'; 
-        statusBar.textContent = '⚠️ ['+ec+']: ' + em; 
-        setTimeout(()=>{statusBar.style.display='none';},10000); 
       }
       
       toast('⚠️ Deriv Error [' + ec + ']: ' + em, 'r', 7000);
@@ -1188,10 +1164,8 @@ function handle(d){
       return;
     }
 
-  if(!d.msg_type)return;
-  const t=d.msg_type;
-  if(['proposal','buy','sell'].includes(t))console.log('[Deriv API] Received:',t,d);
-  if(t==='pong'){lat=now()-pingT;$('metaLat').textContent=lat+'ms';$('metaLat').style.color=lat<120?'var(--green)':lat<350?'var(--gold)':'var(--red)';$('sbPing').textContent='Ping:'+lat+'ms';return;}
+    if(!d.msg_type)return;
+    const t=d.msg_type;
   if(t==='authorize'){
     window._authInProgress = false;
     // Success! Clear retry flag
