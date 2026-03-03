@@ -997,9 +997,20 @@ function getStoredToken(loginid){
       if(tok&&tok.length>10){activeToken=tok;activeLoginid=storedActive;hideLogin();return;}
     }
     const keys=Object.keys(tokenStore).filter(k=>k&&k.length>2);
+    let foundValid = false;
     for(let i=0;i<keys.length;i++){
       const tok=getStoredToken(keys[i]);
-      if(tok&&tok.length>10){activeToken=tok;activeLoginid=keys[i];lsSet('deriv_active',keys[i]);hideLogin();return;}
+      if(tok&&tok.length>10){
+        activeToken=tok;
+        activeLoginid=keys[i];
+        lsSet('deriv_active',keys[i]);
+        foundValid = true;
+        break;
+      }
+    }
+    if (foundValid) {
+      hideLogin();
+      return;
     }
     showLogin();
   }
