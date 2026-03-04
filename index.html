@@ -1602,50 +1602,85 @@ function handle(d){
   }
   if(t==='sell'){
     isBuying=false;
-    if(!d.error && d.sell){
-      // Sell acknowledged by Deriv — clear safety timer
-      if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
-      // Update balance immediately from sell response
-      if(d.sell.balance_after!==undefined){
-        realBalance=parseFloat(d.sell.balance_after);
-        const acct=accountList.find(a=>a.loginid===activeLoginid);
-        if(acct)acct.balance=realBalance;
-        updateBalanceUI();
-        flashBalance();
-        console.log('[Deriv] ✅ Sell confirmed, balance:',realBalance,userCurrency);
-      }
-      // Capture sell amount if present — poc.sell_price may match this
-      if(d.sell.sold_for!==undefined && parseFloat(d.sell.sold_for)>0){
-        lastKnownPayout = parseFloat(d.sell.sold_for);
-        if(con) con.payout = lastKnownPayout;
-        console.log('[Sell] sold_for='+lastKnownPayout);
-      }
-      // DO NOT close con here — wait for poc.status='sold' for final P&L
-    }
+    if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
+
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown sell error';
-      console.error('[Deriv] Sell error:', {code: ec, message: em, raw: d.error});
-      const aiStatusEl = $('sigSub');
+      console.error('[Sell] Error:',ec,em);
       if(['InvalidSellContractProposal','AlreadySold','ContractAlreadySold'].includes(ec)){
-        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Contract already settled by Deriv';
-        if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
-        // Do NOT clear con here. If poc hasn't arrived yet, keep con alive for poc to close.
-        // If poc already fired, con is already null — no harm done.
-        // Refresh balance to reflect payout
-        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},800);
-        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},3000);
-      }else{
-        if(aiStatusEl) aiStatusEl.textContent = '⚠️ Sell error: ' + em;
+        // Deriv already closed this — poc.status=lost/sold/won will arrive and settle it
+        // Just update balance and wait
+        if($('sigSub')) $('sigSub').textContent='⚠️ Already settled by Deriv';
+        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},500);
+      } else {
         toast('⚠️ Sell error ['+ec+']: '+em,'r',5000);
+        // On sell error, clear stuck state if con is unrecoverable
+        if(con){ exitingNow=false; }
       }
       return;
     }
-    toast('Sold — awaiting Deriv settlement…','g',2000);
-    // Refresh balance after successful sell
-    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
-    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},4000);
-    // Restart proposal stream after sell (contract will close via proposal_open_contract)
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2500);
+
+    // ── Sell SUCCESS ──
+    // d.sell.sold_for = the actual amount Deriv paid us for this contract.
+    // This is the authoritative final payout. Record P&L right here.
+    if(!con){
+      // con already cleared (edge case: sell arrived after poc already settled it)
+      if(d.sell&&d.sell.balance_after!==undefined){
+        realBalance=parseFloat(d.sell.balance_after);
+        updateBalanceUI(); flashBalance();
+      }
+      return;
+    }
+
+    const soldFor  = d.sell&&d.sell.sold_for!==undefined ? parseFloat(d.sell.sold_for) : 0;
+    const balAfter = d.sell&&d.sell.balance_after!==undefined ? parseFloat(d.sell.balance_after) : null;
+
+    console.log('[Sell] ✅ sold_for='+soldFor+' balance_after='+balAfter);
+
+    // Update balance immediately
+    if(balAfter!==null){
+      realBalance=balAfter;
+      const acct=accountList.find(a=>a.loginid===activeLoginid);
+      if(acct) acct.balance=realBalance;
+      updateBalanceUI(); flashBalance();
+    }
+
+    // Determine payout: use sold_for if available, else last known bid_price
+    const finalPayout = soldFor>0 ? soldFor : (lastKnownPayout>0 ? lastKnownPayout : parseFloat(con.payout||0));
+    const stk  = parseFloat(con.stake||0);
+    const tks  = con.ticks;
+    const byAI = con.byAI;
+
+    // A sell is a WIN if we got back more than we put in
+    const won = finalPayout > stk && stk > 0;
+    const finalProfit = won
+      ? parseFloat((finalPayout-stk).toFixed(2))
+      : parseFloat((-stk).toFixed(2));
+
+    console.log('[Sell] P&L — won:',won,'stake:',stk,'received:',finalPayout,'profit:',finalProfit);
+
+    if(byAI){
+      if(won){aiWins++;}else{aiLoss++;}
+      aiTrades++;
+      aiPnl=parseFloat((aiPnl+finalProfit).toFixed(2));
+      addHistItem({won, pnl:finalProfit, reason:'Sold', ticks:tks});
+      if(won) showFlash('flashWin','WIN +$'+Math.abs(finalProfit).toFixed(2)+' ('+tks+'t)',2500);
+    }
+
+    lastKnownPayout=0;
+
+    // Clear contract state
+    exitingNow=false; isBuying=false; con=null; clearBarriers();
+    buyPendingAfterStream=false; buyFromAIPending=false;
+    exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+    renderNoContract(); resetBarrierUI(); phase='HUNTING'; updatePhaseUI();
+    $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+
+    const msg=won?'✅ WIN +$'+Math.abs(finalProfit).toFixed(2):'❌ LOSS -$'+stk.toFixed(2);
+    toast(msg,won?'g':'r',5000);
+
+    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},500);
+    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
     return;
   }
 }
@@ -2196,7 +2231,7 @@ function analyzeHistoricalBreaks(symKey) {
       prevP=p;addTickRow(p,chg,t);
       return;
     }
-    if(tp&&con.pnl>=tp)sniperExit(p,0,'Take Profit');
+    if(tp&&con.pnl>=tp&&con.ticks>=2)sniperExit(p,0,'Take Profit');
   }
 
   if(!isHistory){
@@ -2574,23 +2609,19 @@ function doEntry(price,score){
 
 function sniperExit(price,bp,reason){
   if(!con||exitingNow)return;
-  // Only exit confirmed contracts — no realId means buy hasn't been confirmed by Deriv
   if(!con.realId){
-    console.log('[SniperExit] Blocked — contract not confirmed by Deriv yet (no realId)');
+    console.log('[SniperExit] Blocked — no realId yet');
     return;
   }
-  // Deriv rejects sells before tick 2
   if(con.ticks<2){
-    console.log('[SniperExit] Blocked — only '+con.ticks+' ticks, need 2 minimum');
+    console.log('[SniperExit] Blocked — '+con.ticks+' ticks, need ≥2');
     return;
   }
-  exitingNow=true;phase='EXITING';updatePhaseUI();
+  exitingNow=true; phase='EXITING'; updatePhaseUI();
   showFlash('flashExit','SNIPER EXIT @ '+price.toFixed(dp)+' | '+reason,2500);
-  closeContract(reason,true);
-  setTimeout(()=>{
-    phase='HUNTING';exitingNow=false;updatePhaseUI();
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
-  },500);
+  // PATH B: sends sell, keeps con alive, waits for poc.status='sold'
+  // exitingNow stays true until PATH A resets it (prevents double-exit)
+  closeContract(reason, true);
 }
 
 function stopProposalStream(){
@@ -2874,94 +2905,107 @@ function _executeBuyFromProposal(prop, fromAI){
 // ═══════════════════════════════════════════
 // CLOSE CONTRACT — properly adds profit to balance
 // ═══════════════════════════════════════════
-function closeContract(reason,fromAI){
-    if(!con)return;
+function closeContract(reason, fromAI){
+    if(!con) return;
 
-    // CRITICAL: If contract was never confirmed by Deriv (no realId),
-    // we cannot record a win or loss — we don't know what happened.
-    // This guard prevents false losses from AI exits before buy confirmation.
+    // Guard: no Deriv contract ID yet — buy wasn't confirmed, nothing to record
     if(!con.realId && !reason.startsWith('Deriv:')){
-      console.warn('[CloseContract] Blocked — no realId yet. Deriv hasn\'t confirmed this trade.');
-      // Clear local state but do NOT record P&L
-      isBuying=false; con=null; clearBarriers();
+      console.warn('[Close] No realId — aborting without P&L');
+      isBuying=false; exitingNow=false; con=null; clearBarriers();
       buyPendingAfterStream=false; buyFromAIPending=false;
       exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
-      renderNoContract(); resetBarrierUI();
-      phase='HUNTING'; exitingNow=false; updatePhaseUI();
+      renderNoContract(); resetBarrierUI(); phase='HUNTING'; updatePhaseUI();
       setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
       return;
     }
 
-    // Minimum tick guard — Deriv rejects sells before tick 2
+    // Guard: Deriv rejects sells before tick 2 (not for Deriv-initiated closes)
     if(con.realId && con.ticks<2 && !reason.startsWith('Deriv:')){
-      console.log('[CloseContract] Blocked — only '+con.ticks+' ticks held. Need 2+ before exit.');
+      console.log('[Close] Only '+con.ticks+' ticks — waiting for tick 2 before sell');
       return;
     }
 
-    const stk = parseFloat(con.stake||0);
-    const tks = con.ticks;
-    const byAI = con.byAI;
+    // Preserve AI flag in case it changed
+    if(fromAI !== undefined) con.byAI = con.byAI || !!fromAI;
+
     const realId = con.realId;
+    const stk    = parseFloat(con.stake||0);
+    const tks    = con.ticks;
+    const byAI   = con.byAI;
 
-    // ── WIN DETECTION ──
-    // Single source of truth: Deriv tells us via poc.status
-    // reason = 'Deriv:won'  → definite win
-    // reason = 'Deriv:lost' → definite loss (barrier hit)
-    // reason = 'Deriv:sold' → manual/AI sell, check payout vs stake
-    // Any other reason (Manual, SniperExit, etc.) → check payout vs stake
-    const isKO = reason==='Deriv:lost';
-    const payoutVal = parseFloat(con.payout||0);
-    const profitVal = parseFloat(con.pnl||0);
-    const won = isKO ? false
-              : reason==='Deriv:won' ? true
-              : profitVal > 0
-              || (payoutVal > stk && stk > 0);
-
-    const finalProfit = won
-      ? (profitVal > 0 ? parseFloat(profitVal.toFixed(2)) : parseFloat((payoutVal-stk).toFixed(2)))
-      : parseFloat((-stk).toFixed(2));
-
-    console.log('[CloseContract] reason='+reason+' realId='+realId+' won='+won+' stake='+stk+' payout='+payoutVal+' profit='+profitVal+' final='+finalProfit);
-
-    if(byAI||fromAI){
-      if(won){aiWins++;}else{aiLoss++;}
-      aiTrades++;
-      aiPnl=parseFloat((aiPnl+finalProfit).toFixed(2));
-      addHistItem({won,pnl:finalProfit,reason,ticks:tks});
-      if(won) showFlash('flashWin','WIN +$'+Math.abs(finalProfit).toFixed(2)+' ('+tks+'t)',2500);
-    }
-
-    // Send sell to Deriv if contract is not already closed by Deriv
-    if(realId && !reason.startsWith('Deriv:')){
-      console.log('[Deriv] Sending sell for contract:',realId,'reason:',reason);
-      send({sell:realId, price:0});
-      // If poc.status='sold' doesn't arrive within 10s, re-subscribe to contract
-      if(window._sellSafetyTimer) clearTimeout(window._sellSafetyTimer);
-      window._sellSafetyTimer = setTimeout(()=>{
-        console.warn('[Sell] No poc.status=sold in 10s — re-subscribing to:',realId);
-        if(ws&&ws.readyState===1){
-          send({proposal_open_contract:1, contract_id:realId, subscribe:1});
-        }
-        setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},2000);
-      },10000);
-    } else {
-      // Deriv already closed it — cancel any pending sell timer
+    // ── Deriv-initiated close (barrier hit or natural end) ──
+    // poc has already given us the authoritative result. Record immediately.
+    if(reason.startsWith('Deriv:')){
       if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
+
+      const isLoss = reason==='Deriv:lost';
+      const payoutVal = parseFloat(con.payout||0);
+      const profitVal = parseFloat(con.pnl||0);
+      const won = isLoss ? false
+                : reason==='Deriv:won' ? true
+                : profitVal>0 || (payoutVal>stk && stk>0);
+
+      const finalProfit = won
+        ? (profitVal>0 ? parseFloat(profitVal.toFixed(2)) : parseFloat((payoutVal-stk).toFixed(2)))
+        : parseFloat((-stk).toFixed(2));
+
+      console.log('[Close] Deriv settled:',reason,'won:',won,'stake:',stk,'payout:',payoutVal,'profit:',profitVal,'final:',finalProfit);
+
+      if(byAI){
+        if(won){aiWins++;}else{aiLoss++;}
+        aiTrades++;
+        aiPnl=parseFloat((aiPnl+finalProfit).toFixed(2));
+        addHistItem({won, pnl:finalProfit, reason, ticks:tks});
+        if(won) showFlash('flashWin','WIN +$'+Math.abs(finalProfit).toFixed(2)+' ('+tks+'t)', 2500);
+        else if(isLoss) showFlash('flashExit','KO LOSS -$'+stk.toFixed(2), 3000);
+      }
+
+      setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},300);
+      setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},2000);
+
+      isBuying=false; exitingNow=false; con=null; clearBarriers();
+      buyPendingAfterStream=false; buyFromAIPending=false;
+      exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+      renderNoContract(); resetBarrierUI(); phase='HUNTING'; updatePhaseUI();
+      $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
+      const msg = won?'✅ WIN +$'+Math.abs(finalProfit).toFixed(2):'❌ LOSS -$'+stk.toFixed(2);
+      toast(msg+' | '+reason, won?'g':'r', 5000);
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
+      return;
     }
 
-    // Refresh balance after close
-    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
-    setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},4000);
+    // ── Manual / AI sell — WE initiated it ──
+    // Send sell to Deriv. The SELL RESPONSE contains d.sell.sold_for
+    // which is the definitive amount received. Record P&L there, not here.
+    // This is simpler and more reliable than waiting for poc.
+    if(!realId){
+      console.warn('[Close] No realId to sell'); return;
+    }
+    console.log('[Close] Sending sell for',realId,'reason:',reason);
+    send({sell:realId, price:0});
+    toast('⏳ Selling…', 'g', 3000);
 
-    isBuying=false; con=null; clearBarriers();
-    buyPendingAfterStream=false; buyFromAIPending=false;
-    exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
-    renderNoContract(); resetBarrierUI();
-    phase='HUNTING'; exitingNow=false; updatePhaseUI();
-    $('sTicks').textContent='0';$('sPnl').textContent='$0.00';$('sPnl').style.color='var(--text)';$('sPayout').textContent='$0.00';
-    const msg=won?'✅ WIN +$'+Math.abs(finalProfit).toFixed(2):'❌ LOSS -$'+Math.abs(stk).toFixed(2);
-    toast(msg+' | '+reason, won?'g':'r', 5000);
-    setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
+    // Safety: if sell response doesn't arrive in 15s, force-clear state
+    if(window._sellSafetyTimer) clearTimeout(window._sellSafetyTimer);
+    window._sellSafetyTimer = setTimeout(()=>{
+      if(con && con.realId===realId){
+        console.error('[Close] No sell response after 15s — force clearing');
+        // Use last known payout as best estimate
+        const payV=parseFloat(con.payout||0);
+        const profV=parseFloat(con.pnl||0);
+        const won2=profV>0||(payV>stk&&stk>0);
+        const fp2=won2?(profV>0?parseFloat(profV.toFixed(2)):parseFloat((payV-stk).toFixed(2))):parseFloat((-stk).toFixed(2));
+        if(byAI){if(won2)aiWins++;else aiLoss++;aiTrades++;aiPnl=parseFloat((aiPnl+fp2).toFixed(2));addHistItem({won:won2,pnl:fp2,reason:reason+'(timeout)',ticks:tks});}
+        isBuying=false; exitingNow=false; con=null; clearBarriers();
+        buyPendingAfterStream=false; exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+        renderNoContract(); resetBarrierUI(); phase='HUNTING'; updatePhaseUI();
+        toast('⚠️ Sell timeout — result estimated','y',5000);
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
+        if(ws&&ws.readyState===1)send({balance:1});
+      }
+    }, 15000);
+
+    // Keep con alive — sell response handler will finalize P&L
 }
 
 // ═══════════════════════════════════════════
