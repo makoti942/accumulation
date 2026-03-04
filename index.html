@@ -945,6 +945,7 @@ let heartbeatTimer=null,lastMsgTime=0;
 let sym='R_10',dp=3,gr=2,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
+let lastKnownPayout=0; // Tracks highest bid_price seen — used when final poc has bid_price=0
 let proposalStreamActive=false,proposalRetryTimer=null,proposalStreamTimer=null;
 let buyPendingAfterStream=false,buyFromAIPending=false,growthLock=false;
 let tokenStore={},accountList=[],activeLoginid='';
@@ -1558,8 +1559,12 @@ function handle(d){
     if(poc.low_barrier&&parseFloat(poc.low_barrier)>0) con.lower=parseFloat(poc.low_barrier);
     if(poc.entry_spot&&parseFloat(poc.entry_spot)>0) con.entry=parseFloat(poc.entry_spot);
     if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
-    if(poc.bid_price!==undefined) con.payout=parseFloat(poc.bid_price);
-    if(poc.buy_price!==undefined) con.stake=parseFloat(poc.buy_price);
+    // Track last known good payout — bid_price=0 in final poc should NOT overwrite real payout
+    if(poc.bid_price!==undefined && parseFloat(poc.bid_price)>0){
+      con.payout=parseFloat(poc.bid_price);
+      lastKnownPayout=parseFloat(poc.bid_price); // remember this
+    }
+    if(poc.buy_price!==undefined && parseFloat(poc.buy_price)>0) con.stake=parseFloat(poc.buy_price);
     updateConUI();
     // Immediately update balance from Deriv's settlement data
     if(poc.balance_after!==undefined && poc.balance_after!==null){
@@ -1568,13 +1573,30 @@ function handle(d){
       if(acct)acct.balance=realBalance;
       updateBalanceUI();
     }
-    // Handle contract settlement
+    // Handle contract settlement — each status has a different payout field
     if(poc.status==='won'||poc.status==='lost'||poc.status==='sold'){
-      // Ensure we have the final payout value before calculating win/loss
-      if(poc.bid_price!==undefined && parseFloat(poc.bid_price)>0) con.payout=parseFloat(poc.bid_price);
-      if(poc.payout!==undefined && parseFloat(poc.payout)>0) con.payout=parseFloat(poc.payout);
       if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
+
+      if(poc.status==='won'){
+        // poc.payout = final settlement amount for won contracts
+        if(poc.payout!==undefined && parseFloat(poc.payout)>0) con.payout=parseFloat(poc.payout);
+        else if(poc.bid_price!==undefined && parseFloat(poc.bid_price)>0) con.payout=parseFloat(poc.bid_price);
+        else if(lastKnownPayout>0) con.payout=lastKnownPayout;
+      } else if(poc.status==='sold'){
+        // For AI/manual sells: final received amount is in poc.sell_price or poc.payout
+        // bid_price is 0 in the final 'sold' poc — never use it for P&L
+        if(poc.sell_price!==undefined && parseFloat(poc.sell_price)>0) con.payout=parseFloat(poc.sell_price);
+        else if(poc.payout!==undefined && parseFloat(poc.payout)>0) con.payout=parseFloat(poc.payout);
+        else if(lastKnownPayout>0) con.payout=lastKnownPayout; // use last good value
+        else con.payout=con.stake; // absolute fallback — at worst break-even
+      } else {
+        // lost — barrier hit, payout is 0
+        con.payout=0;
+      }
+
+      console.log('[Settlement] status='+poc.status+' stake='+con.stake+' payout='+con.payout+' profit='+con.pnl+' lastKnown='+lastKnownPayout);
       closeContract('Deriv:'+poc.status, con.byAI);
+      lastKnownPayout=0; // reset for next trade
     }
     return;
   }
@@ -1592,8 +1614,13 @@ function handle(d){
         flashBalance();
         console.log('[Deriv] ✅ Sell confirmed, balance:',realBalance,userCurrency);
       }
+      // Capture sell amount if present — poc.sell_price may match this
+      if(d.sell.sold_for!==undefined && parseFloat(d.sell.sold_for)>0){
+        lastKnownPayout = parseFloat(d.sell.sold_for);
+        if(con) con.payout = lastKnownPayout;
+        console.log('[Sell] sold_for='+lastKnownPayout);
+      }
       // DO NOT close con here — wait for poc.status='sold' for final P&L
-      // poc gives us the actual payout amount, sell response does not always have it
     }
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown sell error';
@@ -2015,10 +2042,9 @@ function analyzeHistoricalBreaks(symKey) {
 
   // ── ACTIVE CONTRACT ──
   // Only process the active contract if it has been confirmed by Deriv (has realId)
-  if(con && !exitingNow && !isHistory){
+  if(con && con.realId && !exitingNow && !isHistory){
     con.ticks++; ticksHeld++;
-    // Only run exit/barrier logic once Deriv has confirmed the contract
-    if(!con.realId) { prevP=p; return; } // still waiting for buy confirmation
+    // con.realId is set — Deriv has confirmed this contract. Safe to run all logic.
     // P&L is updated strictly from Deriv API (proposal_open_contract)
     // No local simulation fallback here to ensure account sync.
 
@@ -2548,7 +2574,12 @@ function doEntry(price,score){
 
 function sniperExit(price,bp,reason){
   if(!con||exitingNow)return;
-  // Hard guard: Deriv rejects sells at entry tick. Must have at least 2 ticks.
+  // Only exit confirmed contracts — no realId means buy hasn't been confirmed by Deriv
+  if(!con.realId){
+    console.log('[SniperExit] Blocked — contract not confirmed by Deriv yet (no realId)');
+    return;
+  }
+  // Deriv rejects sells before tick 2
   if(con.ticks<2){
     console.log('[SniperExit] Blocked — only '+con.ticks+' ticks, need 2 minimum');
     return;
@@ -2813,37 +2844,28 @@ function _executeBuyFromProposal(prop, fromAI){
     // immediately invalidates the proposal ID we're about to buy with.
     // We stop the stream AFTER the buy is confirmed by Deriv (in the buy handler).
 
-    // Create pending contract object (realId=null until Deriv confirms)
-    con={
-      entry:parseFloat(prop.spot)||prevP,
-      upper:parseFloat(prop.barrier),
-      lower:parseFloat(prop.low_barrier),
-      ticks:0,
-      stake:parseFloat(prop.ask_price),
-      pnl:0,
-      payout:parseFloat(prop.ask_price),
-      start:now(),
-      byAI:!!fromAI,
-      realId:null,      // Will be set when Deriv confirms
-      isReal:!isVirtual
-    };
-    ticksHeld=0;
-    drawBarriers();
-    updateConUI();
-    $('exitMeter').classList.add('on');
-    toast(label+' — buying on Deriv…','g',3000);
+    // Store params for the buy handler to use when Deriv confirms
+    // DO NOT create con here — con is ONLY created after Deriv confirms with a real contract_id
+    // Creating con with realId:null causes ticks to count, AI exits to fire, and false losses
+    window._pendingBuyFromAI  = !!fromAI;
+    window._pendingBuyStake   = parseFloat(prop.ask_price);
+    window._pendingBuyBarrierU = parseFloat(prop.barrier)||0;
+    window._pendingBuyBarrierL = parseFloat(prop.low_barrier)||0;
+    window._pendingBuySpot    = parseFloat(prop.spot)||prevP||0;
+    window._pendingBuyVirtual = isVirtual;
 
-    // Send the actual buy command to Deriv using the authenticated session
+    toast(label+' — waiting for Deriv confirmation…','g',3000);
+
+    // Send the actual buy command to Deriv
     send({buy:prop.id, price:parseFloat(prop.ask_price)});
 
-    // Safety: if no buy confirmation in 12s, cancel the pending state
+    // Safety: if no buy confirmation in 12s, reset buy state
     if(window._buySafetyTimer){clearTimeout(window._buySafetyTimer);}
     window._buySafetyTimer=setTimeout(()=>{
-      if(con&&!con.realId){
-        console.error('[Buy] No confirmation from Deriv after 12s');
-        isBuying=false; pendingProposal=null;
-        con=null; clearBarriers(); renderNoContract();
-        toast('⚠️ No buy confirmation — please try again','r',5000);
+      if(isBuying&&!con){
+        console.error('[Buy] No Deriv confirmation after 12s — resetting');
+        isBuying=false; pendingProposal=null; buyPendingAfterStream=false;
+        toast('⚠️ No buy confirmation — try again','r',5000);
         setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},500);
       }
     },12000);
@@ -2854,25 +2876,52 @@ function _executeBuyFromProposal(prop, fromAI){
 // ═══════════════════════════════════════════
 function closeContract(reason,fromAI){
     if(!con)return;
-    // Hard guard — never try to close at entry tick (Deriv rejects it)
-    if(con.ticks<2&&reason!=='Deriv:won'&&reason!=='Deriv:lost'&&reason!=='Deriv:sold'){
-      console.log('[CloseContract] Blocked — only '+con.ticks+' ticks held. Waiting for tick 2.');
+
+    // CRITICAL: If contract was never confirmed by Deriv (no realId),
+    // we cannot record a win or loss — we don't know what happened.
+    // This guard prevents false losses from AI exits before buy confirmation.
+    if(!con.realId && !reason.startsWith('Deriv:')){
+      console.warn('[CloseContract] Blocked — no realId yet. Deriv hasn\'t confirmed this trade.');
+      // Clear local state but do NOT record P&L
+      isBuying=false; con=null; clearBarriers();
+      buyPendingAfterStream=false; buyFromAIPending=false;
+      exitProbability=0; updateExitMeter(0); $('exitMeter').classList.remove('on');
+      renderNoContract(); resetBarrierUI();
+      phase='HUNTING'; exitingNow=false; updatePhaseUI();
+      setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
       return;
     }
-    const stk = con.stake;
+
+    // Minimum tick guard — Deriv rejects sells before tick 2
+    if(con.realId && con.ticks<2 && !reason.startsWith('Deriv:')){
+      console.log('[CloseContract] Blocked — only '+con.ticks+' ticks held. Need 2+ before exit.');
+      return;
+    }
+
+    const stk = parseFloat(con.stake||0);
     const tks = con.ticks;
     const byAI = con.byAI;
     const realId = con.realId;
 
-    // Win detection — accumulator wins when payout > stake
-    // payout (bid_price from Deriv) = what we receive after growth
-    const isKO = reason==='Deriv:lost' || reason==='KO';
+    // ── WIN DETECTION ──
+    // Single source of truth: Deriv tells us via poc.status
+    // reason = 'Deriv:won'  → definite win
+    // reason = 'Deriv:lost' → definite loss (barrier hit)
+    // reason = 'Deriv:sold' → manual/AI sell, check payout vs stake
+    // Any other reason (Manual, SniperExit, etc.) → check payout vs stake
+    const isKO = reason==='Deriv:lost';
     const payoutVal = parseFloat(con.payout||0);
+    const profitVal = parseFloat(con.pnl||0);
     const won = isKO ? false
               : reason==='Deriv:won' ? true
-              : (payoutVal > stk && stk > 0);
-    const finalProfit = won ? parseFloat((payoutVal - stk).toFixed(2)) : parseFloat((-stk).toFixed(2));
-    const finalPayout = won ? payoutVal : 0;
+              : profitVal > 0
+              || (payoutVal > stk && stk > 0);
+
+    const finalProfit = won
+      ? (profitVal > 0 ? parseFloat(profitVal.toFixed(2)) : parseFloat((payoutVal-stk).toFixed(2)))
+      : parseFloat((-stk).toFixed(2));
+
+    console.log('[CloseContract] reason='+reason+' realId='+realId+' won='+won+' stake='+stk+' payout='+payoutVal+' profit='+profitVal+' final='+finalProfit);
 
     if(byAI||fromAI){
       if(won){aiWins++;}else{aiLoss++;}
@@ -2886,18 +2935,19 @@ function closeContract(reason,fromAI){
     if(realId && !reason.startsWith('Deriv:')){
       console.log('[Deriv] Sending sell for contract:',realId,'reason:',reason);
       send({sell:realId, price:0});
-      // If sell is not confirmed within 8s, the contract may still be running on Deriv.
-      // Subscribe to it so we get the final settlement via proposal_open_contract.
+      // If poc.status='sold' doesn't arrive within 10s, re-subscribe to contract
+      if(window._sellSafetyTimer) clearTimeout(window._sellSafetyTimer);
       window._sellSafetyTimer = setTimeout(()=>{
-        // con was cleared already (below), but realId is captured in closure
-        console.warn('[Sell] No sell confirmation in 8s — subscribing to contract for settlement');
-        if(ws&&ws.readyState===1) send({proposal_open_contract:1, contract_id:realId, subscribe:1});
-        // Force balance refresh too
+        console.warn('[Sell] No poc.status=sold in 10s — re-subscribing to:',realId);
+        if(ws&&ws.readyState===1){
+          send({proposal_open_contract:1, contract_id:realId, subscribe:1});
+        }
         setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},2000);
-      },8000);
-    } 
-    // Always cancel sell safety timer — Deriv has closed the contract
-    if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
+      },10000);
+    } else {
+      // Deriv already closed it — cancel any pending sell timer
+      if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
+    }
 
     // Refresh balance after close
     setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},1500);
