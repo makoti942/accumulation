@@ -2127,170 +2127,271 @@ function analyzeHistoricalBreaks(symKey) {
     $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
     $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
 
-    // ══════════════════════════════════════════════════════════════
-    // ════════════════════════════════════════════════════════════════
-    // DANGER ENGINE v4 — weighted evidence scoring + spike detection
-    // ════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════════
+    // PREDICTIVE EXIT ENGINE v5
+    // ════════════════════════════════════════════════════════════════════
+    // TWO LAYERS working together:
+    //
+    //  LAYER 1 — PREDICTORS (forward-looking, fire BEFORE the barrier breaks)
+    //    P1. Linear Regression Projection   — projects price 3 ticks forward
+    //    P2. Weighted Velocity TTB           — ticks-to-barrier at current speed
+    //    P3. Stochastic %K extreme           — price overbought in recent range
+    //    P4. EMA MACD momentum               — fast EMA crossing slow EMA toward barrier
+    //    P5. Parabolic SAR direction         — trend direction aligned with barrier
+    //    P6. Hurst exponent (20-tick)        — is movement trending or mean-reverting?
+    //
+    //  LAYER 2 — REACTIVE RULES (fire NOW on confirmed danger)
+    //    R1. Spike detection                 — last tick ≥2.5× median
+    //    R2. Double spike                    — 2 consecutive large ticks
+    //    R3. Proximity + direction streak    — close AND pushing toward barrier
+    //    R4. Sustained 4-tick run            — 4 consecutive toward barrier
+    //    R5. Elevated velocity streak        — fast ticks toward barrier
+    //    R6. Critical zone                   — within 12% of barrier gap
+    //    R7. RSI extreme + proximity         — RSI>78 AND within 35%
+    //    R8. Volatility burst + direction    — vol regime 2×+ AND toward barrier
+    // ════════════════════════════════════════════════════════════════════
+
     const n = tickBuf.length;
     const canExit = con.ticks >= 2;
 
     if(!canExit || !aiOn || !con.byAI || con.pendingSell){
       updateConUI();
       if(p>=con.upper||p<=con.lower){
-        recordBreak(sym,con.ticks);updatePatternUI(sym);
+        recordBreak(sym,con.ticks); updatePatternUI(sym);
         $('chartWrap').classList.add('danger');
         setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
       }
       if(tp&&con.pnl>=tp) sniperExit(p,0,'Take Profit');
-      prevP=p;addTickRow(p,chg,t);
+      prevP=p; addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
     }
 
-    // ── Shared stats ─────────────────────────────────────────────
+    // ── SHARED STATS ─────────────────────────────────────────────
     const toBarDir = nearBar===con.upper;
 
-    // Build robust ATR baseline using MEDIAN of pre-trade ticks
-    // Use all available ticks, sorted, to get a clean baseline
-    const allMoves = [];
-    for(let i=1;i<n;i++) allMoves.push(Math.abs(tickBuf[i].p-tickBuf[i-1].p));
-    const sortedMoves = [...allMoves].sort((a,b)=>a-b);
-    const medianATR   = sortedMoves[Math.floor(sortedMoves.length/2)] || 0.0001;
-    // Short-term ATR (last 8 ticks) for regime detection
-    const recentMoves = allMoves.slice(-8);
-    const atrRecent   = recentMoves.reduce((a,b)=>a+b,0)/recentMoves.length || 0.0001;
-    // Regime ratio: how much more volatile is right now vs normal
-    const volRegime = atrRecent/medianATR;
+    // Robust median ATR — immune to spike inflation of mean
+    const _allMv=[];
+    for(let i=1;i<n;i++) _allMv.push(Math.abs(tickBuf[i].p-tickBuf[i-1].p));
+    const _sortMv=[..._allMv].sort((a,b)=>a-b);
+    const medATR = _sortMv[Math.floor(_sortMv.length/2)] || 0.0001;
 
-    // SMA20 + std for Bollinger
-    const pr20 = tickBuf.slice(-20).map(b=>b.p);
-    const sma20 = pr20.reduce((a,b)=>a+b,0)/pr20.length;
-    const std20 = Math.sqrt(pr20.reduce((a,b)=>a+Math.pow(b-sma20,2),0)/pr20.length)||0.0001;
+    // Short regime ATR (last 8 ticks)
+    const _r8 = _allMv.slice(-8);
+    const atrNow = _r8.reduce((a,b)=>a+b,0)/_r8.length || 0.0001;
+    const volRegime = atrNow/medATR;
 
-    // Signed move helper: positive = toward barrier
-    const sm = (i) => { const m=tickBuf[n-i].p-tickBuf[n-i-1].p; return toBarDir?m:-m; };
+    // ─────────────────────────────────────────────────────────────
+    // ════ LAYER 1 — PREDICTORS ════════════════════════════════
+    // ─────────────────────────────────────────────────────────────
 
-    // ── DANGER SCORE ─────────────────────────────────────────────
-    let danger=0, reasons=[];
+    let predReason = '';
 
-    // ══ SPIKE DETECTION (highest priority — checked first) ══════
-    // A spike heading toward the barrier is the #1 cause of KO.
-    // We check the LAST tick AND last 2 ticks.
-    // Immediate exit if spike > 3.5× median AND toward barrier.
-    const lastMv  = Math.abs(tickBuf[n-1].p-tickBuf[n-2].p);
-    const spRatio = lastMv/medianATR;
-    const lastDir = tickBuf[n-1].p-tickBuf[n-2].p;
-    const spikeToBar = toBarDir ? lastDir>0 : lastDir<0;
-
-    // ANY spike ≥ 3× median toward barrier = immediate exit regardless of proximity
-    if(spRatio >= 3.0 && spikeToBar){
-      const spikePts = Math.min(60, spRatio*10);
-      danger += spikePts;
-      reasons.push('SPIKE×'+spRatio.toFixed(1));
-    }
-    // Spike away from barrier but very close — still dangerous (bounce risk)
-    if(spRatio >= 4.0 && !spikeToBar && safetyPct<25){
-      danger += 20;
-      reasons.push('BigTick<25%');
-    }
-    // Previous tick was also a spike? Double-spike = exit immediately
-    if(n>=3){
-      const prevMv = Math.abs(tickBuf[n-2].p-tickBuf[n-3].p);
-      if(lastMv>medianATR*2.5 && prevMv>medianATR*2.5 && spikeToBar){
-        danger += 25;
-        reasons.push('DblSpike');
+    // ── P1: LINEAR REGRESSION PROJECTION ──────────────────────────
+    // Fit linear regression to last 10 ticks.
+    // Project price 3 and 5 ticks forward.
+    // If projected price is within 15% of barrier → exit NOW.
+    // This predicts where price WILL BE, not where it is.
+    {
+      const WIN=Math.min(10,n);
+      const pts=tickBuf.slice(-WIN).map(b=>b.p);
+      const xm=(WIN-1)/2;
+      const ym=pts.reduce((a,b)=>a+b,0)/WIN;
+      let num=0,den=0;
+      for(let i=0;i<WIN;i++){num+=(i-xm)*(pts[i]-ym);den+=(i-xm)*(i-xm);}
+      const slope=den>0?num/den:0;
+      // Project 3 and 5 ticks forward from current last tick
+      const proj3 = p + slope*3;
+      const proj5 = p + slope*5;
+      // Safety% if projected price is reached
+      const safe3 = (Math.min(con.upper-proj3, proj3-con.lower)/half)*100;
+      const safe5 = (Math.min(con.upper-proj5, proj5-con.lower)/half)*100;
+      if(!predReason && safe3 < 18){
+        predReason='LRP3:'+safe3.toFixed(0)+'%safe';
+      } else if(!predReason && safe5 < 10){
+        predReason='LRP5:'+safe5.toFixed(0)+'%safe';
+      }
+      // Also exit if slope is strongly toward barrier and we're already within 45%
+      const slopeToBar = toBarDir ? slope>0 : slope<0;
+      const slopeStrong = Math.abs(slope) > medATR*1.2;
+      if(!predReason && slopeToBar && slopeStrong && safetyPct<45){
+        predReason='LRP:slope×'+(Math.abs(slope)/medATR).toFixed(1)+'<45%';
       }
     }
 
-    // ══ VOLATILITY REGIME (high vol = high danger even without spike) ══
-    if(volRegime > 1.8){
-      // High vol burst — check if it's moving toward barrier
-      const vel5 = n>=6 ? tickBuf[n-1].p-tickBuf[n-5].p : 0;
-      const v5ToBar = toBarDir?vel5>0:vel5<0;
-      const regimePts = Math.min(22, (volRegime-1.8)*14+5);
-      danger += regimePts * (v5ToBar?1.0:0.4);
-      reasons.push('Vol×'+volRegime.toFixed(1));
-    }
-
-    // ══ MOMENTUM ACCELERATION ═══════════════════════════════════
-    // 3+ consecutive moves toward barrier, each building on the last
-    if(n>=5){
-      const s1=sm(1),s2=sm(2),s3=sm(3);
-      const all3toward = s1>0 && s2>0 && s3>0;
-      if(all3toward){
-        // Measure total push as % of barrier gap
-        const push3 = s1+s2+s3;
-        const pushPct = push3/half;
-        // Check if accelerating (each ≥ 60% of previous)
-        const accel = (s1>=s2*0.6 && s2>=s3*0.6);
-        const pts = Math.min(26, pushPct*180 + (accel?8:0));
-        if(pts>4){ danger+=pts; reasons.push('Mom3→('+(pushPct*100).toFixed(1)+'%)'); }
+    // ── P2: WEIGHTED VELOCITY → TICKS-TO-BARRIER (TTB) ────────────
+    // Exponentially weighted recent velocity (newest ticks matter most).
+    // TTB = remaining barrier distance / velocity toward barrier.
+    // If TTB < 5 ticks → exit immediately (it will hit on next few ticks).
+    if(!predReason){
+      const WV=Math.min(8,n-1);
+      let velSum=0,wSum=0;
+      for(let i=0;i<WV;i++){
+        const idx=n-1-i;
+        const mv=tickBuf[idx].p-tickBuf[idx-1].p;
+        const w=WV-i; // weight: newest=WV, oldest=1
+        velSum+=mv*w; wSum+=w;
       }
-      // 4 consecutive
-      if(n>=6){
-        const s4=sm(4);
-        if(s1>0&&s2>0&&s3>0&&s4>0){
-          const push4=s1+s2+s3+s4;
-          const pts = Math.min(32, (push4/half)*200);
-          if(pts>8){ danger+=pts; reasons.push('Mom4→'); }
-        }
+      const wVel=wSum>0?velSum/wSum:0;
+      // Velocity component toward barrier
+      const velToBar = toBarDir ? wVel : -wVel;
+      if(velToBar>0){
+        const ttb = nearDist/velToBar;
+        if(ttb < 5){ predReason='TTB:'+ttb.toFixed(1)+'tks'; }
+        else if(ttb < 9 && safetyPct < 40){ predReason='TTB:'+ttb.toFixed(1)+'tks<40%'; }
       }
     }
 
-    // ══ PROXIMITY CASCADE ════════════════════════════════════════
-    // Exponential — 40%→2, 30%→7, 20%→16, 12%→24, 6%→32
-    if(safetyPct < 40){
-      const proxPts = Math.min(32, Math.pow((40-safetyPct)/40, 1.5)*34);
-      danger += proxPts;
-      reasons.push('Prox'+safetyPct.toFixed(1)+'%');
+    // ── P3: STOCHASTIC %K EXTREME ──────────────────────────────────
+    // %K = how high is current price within the last 14-tick range.
+    // >82 toward upper barrier = price at the top of its recent range,
+    // likely to push through the barrier.
+    // <18 toward lower barrier = same logic reversed.
+    if(!predReason && n>=14){
+      const SKW=Math.min(14,n);
+      const skPrices=tickBuf.slice(-SKW).map(b=>b.p);
+      const skLo=Math.min(...skPrices), skHi=Math.max(...skPrices);
+      const stochK = skHi>skLo ? (p-skLo)/(skHi-skLo)*100 : 50;
+      const stochDanger=(toBarDir && stochK>82) || (!toBarDir && stochK<18);
+      if(stochDanger && safetyPct<50){
+        predReason='Stoch:'+(toBarDir?stochK.toFixed(0):(100-stochK).toFixed(0))+'%<50%safe';
+      }
     }
 
-    // ══ RSI EXHAUSTION ══════════════════════════════════════════
-    if(n>=8){
-      const rw=Math.min(10,n-1);
-      let g=0,l=0;
+    // ── P4: EMA MACD MOMENTUM CROSSOVER ───────────────────────────
+    // EMA(4) crosses above EMA(10) = bullish momentum.
+    // If bullish AND near upper barrier, momentum is pushing toward KO.
+    // If bearish AND near lower barrier, same.
+    // This catches EARLY momentum build — before it's obvious.
+    if(!predReason && n>=12){
+      const allPrices=tickBuf.slice(-12).map(b=>b.p);
+      // EMA calculation: k=2/(period+1)
+      const calcEMA=(pts,per)=>{let e=pts[0];const k=2/(per+1);for(let i=1;i<pts.length;i++)e=pts[i]*k+e*(1-k);return e;};
+      const ema4=calcEMA(allPrices,4);
+      const ema10=calcEMA(allPrices,10);
+      const macd=ema4-ema10;
+      const macdToBar=(toBarDir&&macd>0)||(!toBarDir&&macd<0);
+      // Also check MACD strength relative to ATR
+      const macdStrength=Math.abs(macd)/medATR;
+      if(macdToBar && macdStrength>0.6 && safetyPct<45){
+        predReason='MACD×'+macdStrength.toFixed(1)+'<45%';
+      }
+    }
+
+    // ── P5: PARABOLIC SAR DIRECTION ────────────────────────────────
+    // SAR flipping toward barrier = trend just confirmed in barrier direction.
+    // Use simplified SAR: if price hi's are rising AND near upper barrier → SAR bullish.
+    // More precisely: measure if the last 5 ticks make higher highs (SAR bullish).
+    if(!predReason && n>=8){
+      const sar5=tickBuf.slice(-5).map(b=>b.p);
+      // Bullish SAR: each high exceeds previous (ascending peaks)
+      let sarBull=true, sarBear=true;
+      for(let i=1;i<sar5.length;i++){
+        if(sar5[i]<=sar5[i-1]) sarBull=false;
+        if(sar5[i]>=sar5[i-1]) sarBear=false;
+      }
+      const sarDanger=(toBarDir&&sarBull)||((!toBarDir)&&sarBear);
+      if(sarDanger && safetyPct<40){
+        predReason='SAR→barrier<40%';
+      }
+    }
+
+    // ── P6: HURST EXPONENT (TRENDING DETECTION) ───────────────────
+    // Hurst exponent > 0.6 on last 20 ticks = price is TRENDING.
+    // Trending price toward barrier = will continue to barrier.
+    // H < 0.4 = mean-reverting = safer to hold.
+    // Computed via simplified R/S analysis on tick returns.
+    if(!predReason && n>=20){
+      const hPrices=tickBuf.slice(-20).map(b=>b.p);
+      const hRets=[];
+      for(let i=1;i<hPrices.length;i++) hRets.push(hPrices[i]-hPrices[i-1]);
+      const hMean=hRets.reduce((a,b)=>a+b,0)/hRets.length;
+      // Cumulative deviation from mean
+      let cumDev=0, maxD=-Infinity, minD=Infinity;
+      for(const r of hRets){ cumDev+=r-hMean; maxD=Math.max(maxD,cumDev); minD=Math.min(minD,cumDev); }
+      const R=maxD-minD;
+      const S=Math.sqrt(hRets.reduce((a,b)=>a+Math.pow(b-hMean,2),0)/hRets.length)||0.0001;
+      const hurst = R>0&&S>0 ? Math.log(R/S)/Math.log(hRets.length) : 0.5;
+      // Is trend toward barrier?
+      const vel5=tickBuf[n-1].p-tickBuf[n-5].p;
+      const trendToBar=(toBarDir&&vel5>0)||(!toBarDir&&vel5<0);
+      if(hurst>0.62 && trendToBar && safetyPct<50){
+        predReason='Hurst:'+hurst.toFixed(2)+'trend<50%';
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ════ LAYER 2 — REACTIVE RULES ════════════════════════════
+    // ─────────────────────────────────────────────────────────────
+
+    let ruleReason = '';
+
+    // Consecutive tick streak toward barrier
+    let streak=0;
+    for(let i=n-1;i>=Math.max(1,n-7);i--){
+      const mv=tickBuf[i].p-tickBuf[i-1].p;
+      if(toBarDir?mv>0:mv<0) streak++; else break;
+    }
+    const lastMv   = Math.abs(tickBuf[n-1].p-tickBuf[n-2].p);
+    const spRatio  = lastMv/medATR;
+    const lastDir  = tickBuf[n-1].p-tickBuf[n-2].p;
+    const lastToBar= toBarDir?lastDir>0:lastDir<0;
+    let streakVelSum=0;
+    for(let i=0;i<streak&&i<n-1;i++){
+      streakVelSum+=Math.abs(tickBuf[n-1-i].p-tickBuf[n-2-i].p);
+    }
+    const avgVelRatio=streak>0?(streakVelSum/streak)/medATR:0;
+
+    // R1: Spike — single tick ≥2.5× median toward barrier
+    if(!ruleReason && lastToBar && spRatio>=2.5){
+      ruleReason='SPIKE×'+spRatio.toFixed(1);
+    }
+    // R2: Double spike — two consecutive 2×+ ticks toward barrier
+    if(!ruleReason && n>=3 && streak>=2){
+      const prev2Mv=Math.abs(tickBuf[n-2].p-tickBuf[n-3].p);
+      if(spRatio>=2.0 && prev2Mv>=medATR*2.0){
+        ruleReason='DblSpike';
+      }
+    }
+    // R3: Proximity + direction — within 40% AND 2+ consecutive toward barrier
+    if(!ruleReason && safetyPct<40 && streak>=2){
+      ruleReason='Close'+safetyPct.toFixed(0)+'%+Str×'+streak;
+    }
+    // R4: Sustained 4-tick run — any size, 4 in a row
+    if(!ruleReason && streak>=4){
+      ruleReason='Run×'+streak;
+    }
+    // R5: Elevated velocity streak — 3 consecutive, avg ≥1.5× median
+    if(!ruleReason && streak>=3 && avgVelRatio>=1.5){
+      ruleReason='FastStr×'+streak+'('+avgVelRatio.toFixed(1)+'v)';
+    }
+    // R6: Critical zone — within 12% regardless
+    if(!ruleReason && safetyPct<12){
+      ruleReason='CRIT<12%';
+    }
+    // R7: RSI extreme + proximity
+    if(!ruleReason && n>=10 && safetyPct<35){
+      const rw=Math.min(10,n-1); let g=0,l=0;
       for(let i=n-rw;i<n;i++){const mv=tickBuf[i].p-tickBuf[i-1].p;if(mv>0)g+=mv;else l+=Math.abs(mv);}
       const rsi=100-100/(1+(g/rw)/((l/rw)||0.0001));
-      const extremeToBar=(toBarDir&&rsi>70)||(!toBarDir&&rsi<30);
-      if(extremeToBar && safetyPct<45){
-        const dev=toBarDir?(rsi-70)/30:(30-rsi)/30;
-        const pts=Math.min(18,dev*16+(45-safetyPct)*0.2);
-        danger+=pts; reasons.push('RSI'+(toBarDir?Math.round(rsi):Math.round(100-rsi)));
+      if((toBarDir&&rsi>78)||(!toBarDir&&rsi<22)){
+        ruleReason='RSI'+(toBarDir?Math.round(rsi):100-Math.round(rsi))+'<35%';
       }
     }
-
-    // ══ BOLLINGER EXTENSION ══════════════════════════════════════
-    if(n>=20 && safetyPct<45 && std20>0){
-      const dev=Math.abs(p-sma20)/std20;
-      const toBar=toBarDir?p>sma20:p<sma20;
-      if(dev>1.6 && toBar){
-        const pts=Math.min(14,(dev-1.6)*12);
-        danger+=pts; reasons.push('BB'+dev.toFixed(1)+'σ');
-      }
+    // R8: High volatility burst + moving toward barrier
+    if(!ruleReason && volRegime>=2.0 && lastToBar && safetyPct<60){
+      ruleReason='VolBurst×'+volRegime.toFixed(1);
     }
 
-    // ══ CRITICAL ZONE ══════════════════════════════════════════
-    // <10% of barrier gap — any signal on top = exit
-    if(safetyPct<10){ danger+=28; reasons.push('CRIT<10%'); }
-
-    // ══ COMPOSITE CONFIRMATION ══════════════════════════════════
-    // breakProb as tiebreaker — only adds weight when already near danger
-    if(bp>=60 && safetyPct<30){
-      const pts=Math.min(10,(bp-60)*0.22);
-      danger+=pts; reasons.push('BP'+bp+'%');
-    }
-
-    // ── FINAL DECISION ───────────────────────────────────────────
-    // Base threshold 50.
-    // BUT: if spike is detected (spRatio≥3 toward barrier), lower threshold to 35
-    // so spike alone + any tiny proximity is enough to fire.
-    const isSpike = spRatio>=3.0 && spikeToBar;
-    const THRESHOLD = isSpike ? 35 : 50;
-    const shouldExit = danger>=THRESHOLD;
+    // ─────────────────────────────────────────────────────────────
+    // DECISION
+    // ─────────────────────────────────────────────────────────────
+    const exitReason = predReason || ruleReason;
+    const shouldExit = !!exitReason;
+    const exitLabel  = predReason ? '🔮'+exitReason : '⚡'+exitReason;
 
     if(shouldExit){
-      const topReason = reasons.slice(0,3).join('+');
-      sniperExit(p, bp, topReason+'['+Math.round(danger)+']');
+      sniperExit(p, bp, exitLabel);
       prevP=p; addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
@@ -2770,8 +2871,8 @@ function scheduleAlternativeGrowth(){
       // Any single filter = no entry. These are non-negotiable.
 
       // B1: Symbol must pass quality threshold
-      if(symScore<48){
-        _setUI('WAIT','Sym:'+symScore+'<48'); return;
+      if(symScore<42){
+        _setUI('WAIT','Sym:'+symScore+'<42'); return;
       }
 
       // B2: Symbol must not have high spike history
@@ -2815,8 +2916,8 @@ function scheduleAlternativeGrowth(){
       }
 
       // B7: Longevity must show empirical barrier survival
-      if(longevity<35){
-        _setUI('WAIT','Longevity:'+longevity+'<35'); return;
+      if(longevity<28){
+        _setUI('WAIT','Longevity:'+longevity+'<28'); return;
       }
 
       // ── ENTRY SCORE ─────────────────────────────────────────
@@ -2833,7 +2934,7 @@ function scheduleAlternativeGrowth(){
       score += rsiNeutral * 0.15;
 
       // Lower threshold = enters faster. 50 = balanced speed/quality.
-      const THRESHOLD=50;
+      const THRESHOLD=46;
       const sig=score>=THRESHOLD?'BUY':'WAIT';
       const reason=sig==='BUY'
         ?'Entry:'+Math.round(score)+' L:'+longevity+' Sp:'+spikeScore
