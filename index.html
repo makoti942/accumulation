@@ -1594,6 +1594,8 @@ function handle(d){
         con.payout=0;
       }
 
+      if(con.pendingSell) con.pendingSell = false; // poc wins — sell was racing with barrier hit
+      if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
       console.log('[Settlement] status='+poc.status+' stake='+con.stake+' payout='+con.payout+' profit='+con.pnl+' lastKnown='+lastKnownPayout);
       closeContract('Deriv:'+poc.status, con.byAI);
       lastKnownPayout=0; // reset for next trade
@@ -1607,15 +1609,38 @@ function handle(d){
     if(d.error){
       const ec=d.error.code||'UnknownError',em=d.error.message||'Unknown sell error';
       console.error('[Sell] Error:',ec,em);
-      if(['InvalidSellContractProposal','AlreadySold','ContractAlreadySold'].includes(ec)){
-        // Deriv already closed this — poc.status=lost/sold/won will arrive and settle it
-        // Just update balance and wait
-        if($('sigSub')) $('sigSub').textContent='⚠️ Already settled by Deriv';
+      // All codes that mean "Deriv already closed this contract"
+      const alreadyDone = ['InvalidSellContractProposal','AlreadySold','ContractAlreadySold',
+                           'ContractIsClosed','ContractAlreadyClosed','ContractNotFound',
+                           'InvalidContractId'].includes(ec)
+                        || /already.*sold/i.test(em) || /contract.*closed/i.test(em)
+                        || /expired/i.test(em);
+      if(alreadyDone){
+        // Contract was closed by Deriv (barrier hit at the same moment we tried to sell)
+        // poc.status='lost' will arrive shortly and settle P&L correctly.
+        // Keep con alive, keep exitingNow=true, clear the sell timer.
+        if($('sigSub')) $('sigSub').textContent='⚠️ Settled by Deriv — awaiting result…';
+        if(window._sellSafetyTimer){clearTimeout(window._sellSafetyTimer);window._sellSafetyTimer=null;}
+        if(con) con.pendingSell = false; // sell didn't go through — Deriv closed it
+        // Give poc 5s to arrive; if it doesn't, force-clear
+        window._sellSafetyTimer = setTimeout(()=>{
+          if(con){
+            console.warn('[Sell] poc never arrived after AlreadySold — force clearing');
+            // Treat as a loss (barrier was hit)
+            const stk2=parseFloat(con.stake||0);
+            if(con.byAI){aiLoss++;aiTrades++;aiPnl=parseFloat((aiPnl-stk2).toFixed(2));addHistItem({won:false,pnl:-stk2,reason:'KO(poc-timeout)',ticks:con.ticks});}
+            exitingNow=false;isBuying=false;con=null;clearBarriers();
+            exitProbability=0;updateExitMeter(0);$('exitMeter').classList.remove('on');
+            buyPendingAfterStream=false;renderNoContract();resetBarrierUI();phase='HUNTING';updatePhaseUI();
+            toast('❌ Contract expired — KO','r',5000);
+            if(ws&&ws.readyState===1)send({balance:1});
+            setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1000);
+          }
+        }, 5000);
         setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},500);
       } else {
         toast('⚠️ Sell error ['+ec+']: '+em,'r',5000);
-        // On sell error, clear stuck state if con is unrecoverable
-        if(con){ exitingNow=false; }
+        if(con){ con.pendingSell=false; exitingNow=false; }
       }
       return;
     }
@@ -1636,6 +1661,7 @@ function handle(d){
     const balAfter = d.sell&&d.sell.balance_after!==undefined ? parseFloat(d.sell.balance_after) : null;
 
     console.log('[Sell] ✅ sold_for='+soldFor+' balance_after='+balAfter);
+    if(con) con.pendingSell = false; // sell confirmed
 
     // Update balance immediately
     if(balAfter!==null){
@@ -2101,137 +2127,195 @@ function analyzeHistoricalBreaks(symKey) {
     $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
     $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
 
-    // ══════════════════════════════════════════════════
-    // 11-LAYER PURE MARKET-ANALYSIS SNIPER EXIT
-    // ══════════════════════════════════════════════════
-    const n=tickBuf.length;
+    // ══════════════════════════════════════════════════════════════
+    // PREDICTIVE DANGER ENGINE v3
+    // ══════════════════════════════════════════════════════════════
+    // Philosophy:
+    //   Exit is decided by EVIDENCE, not thresholds.
+    //   Each signal must be independently meaningful.
+    //   Signals are weighted and summed into a DANGER SCORE.
+    //   Exit fires when score crosses a confidence threshold.
+    //   This beats individual layer systems because weak signals
+    //   that co-occur are more reliable than one strong signal.
+    // ══════════════════════════════════════════════════════════════
+    const n = tickBuf.length;
+    const canExit = con.ticks >= 2; // hard Deriv minimum
 
-    // QUANTUM-SHIELD ABSOLUTE ZERO-LOSS EXIT
-    // L1: GHOST-TICK PREDICTION — Predicts next 3 ticks. Exit if ANY path is dangerous.
-    const last3 = tickBuf.slice(-3).map(b=>b.p);
-    const v1 = last3[2]-last3[1], v2 = last3[1]-last3[0];
-    const accel = v1 - v2;
-    const nextP1 = p + v1 + accel;
-    const nextP2 = nextP1 + v1 + (accel * 1.5);
-    const nextP3 = nextP2 + v1 + (accel * 2.0);
-    const L1 = (nearBar===con.upper && (nextP1 > con.upper*0.999 || nextP2 > con.upper*0.999 || nextP3 > con.upper*0.999)) ||
-               (nearBar===con.lower && (nextP1 < con.lower*1.001 || nextP2 < con.lower*1.001 || nextP3 < con.lower*1.001));
-
-    // L2: BOLLINGER-ATR HYBRID — Exit if price touches bands OR ATR expands 20%
-    const prices = tickBuf.slice(-20).map(b=>b.p);
-    const sma = prices.reduce((a,b)=>a+b,0)/20;
-    const std = Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-sma,2),0)/20);
-    const ranges = tickBuf.slice(-20).map((b,i,ar)=>i===0?0:Math.abs(b.p-ar[i-1].p));
-    const atr = ranges.reduce((a,b)=>a+b,0)/20;
-    const prevAtr = ranges.slice(0,15).reduce((a,b)=>a+b,0)/15;
-    const L2 = (nearBar===con.upper && p > (sma + std*1.8)) || (nearBar===con.lower && p < (sma - std*1.8)) || (atr > prevAtr * 1.2);
-
-    // L3: PROACTIVE BREAK RISK — Exit if BP hits 25% (Maximum safety)
-    const L3=bp>=35&&safetyPct<40;
-
-    // L4: INSTITUTIONAL STOP-RUN DETECTION — Sudden volume/momentum burst
-    let L4=false;
-    if(n>=5){
-      const microV = Math.abs(tickBuf[n-1].p - tickBuf[n-5].p);
-      if(microV > atr * 3.5 && safetyPct < 85) L4=true;
-    }
-
-    // L5: INSTANT REVERSAL GUARD — Exit on ANY tick toward barrier if safety < 80%
-    let L5=false;
-    if(n>=2&&safetyPct<80){
-      const toBar = (nearBar===con.upper && tickBuf[n-1].p > tickBuf[n-2].p) || (nearBar===con.lower && tickBuf[n-1].p < tickBuf[n-2].p);
-      L5=toBar;
-    }
-
-    // L6: NEURAL CONFIDENCE SHIELD — Exit if AI confidence drops below 75%
-    const L6=hs<75||safetyPct<60;
-
-    let L7=false;
-    if(n>=4&&safetyPct<30){
-      const last4=tickBuf.slice(-4).map(b=>b.p);
-      const testU=Math.max(...last4)/con.upper;
-      const testL=con.lower/Math.min(...last4);
-      L7=testU>0.9992||testL>0.9992;
-    }
-
-    let L8=false;
-    if(n>=7&&safetyPct<50){
-      const moves=[];
-      for(let i=n-6;i<n;i++)moves.push(tickBuf[i].p-tickBuf[i-1].p);
-      const toBar=nearBar===con.upper;
-      const allToBar=moves.every(m=>toBar?m>0:m<0);
-      const accelerating=moves.every((m,i)=>i===0||Math.abs(m)>=Math.abs(moves[i-1])*0.75);
-      L8=allToBar&&accelerating;
-    }
-
-    let L9=false;
-    if(n>=8&&bp>=55&&safetyPct<25){
-      const vel5=(tickBuf[n-1].p-tickBuf[n-5].p);
-      const toBar=(nearBar===con.upper&&vel5>0)||(nearBar===con.lower&&vel5<0);
-      const velPct=Math.abs(vel5)/half;
-      L9=toBar&&velPct>0.15;
-    }
-
-    let L10=false;
-    if(n>=10&&safetyPct<35){
-      let g=0,l=0;
-      for(let i=n-9;i<n;i++){const c=tickBuf[i].p-tickBuf[i-1].p;if(c>0)g+=c;else l+=Math.abs(c);}
-      const rsiVal=100-100/(1+((g/9)||0.001)/((l/9)||0.001));
-      const extremeUp=nearBar===con.upper&&rsiVal>75;
-      const extremeDn=nearBar===con.lower&&rsiVal<25;
-      L10=extremeUp||extremeDn;
-    }
-
-    let L11=false;
-    if(n>=12&&safetyPct<45){
-      const avgSz=tickBuf.slice(n-12,n-4).reduce((a,b)=>a+Math.abs(b.chg),0)/8||0.0001;
-      const last4=tickBuf.slice(-4);
-      const allDir=last4.every(b=>nearBar===con.upper?b.up:!b.up);
-      const allBig=last4.every(b=>Math.abs(b.chg)>avgSz*1.5);
-      L11=allDir&&allBig;
-    }
-
-    // ── MINIMUM TICK GUARD ──
-    // Deriv does NOT allow selling a contract at the same tick it was bought.
-    // Enforce a hard minimum of 2 ticks before ANY exit attempt.
-    // Also, the AI should hold through good markets — only exit on real danger.
-    const MIN_TICKS_BEFORE_EXIT = 2;
-    const canExit = con.ticks >= MIN_TICKS_BEFORE_EXIT;
-
-    // Relax L2: ATR expansion alone is too noisy — only exit on BB breach when close to barrier
-    const L2fixed = canExit && ((nearBar===con.upper && p > (sma + std*1.8) && safetyPct<50) || (nearBar===con.lower && p < (sma - std*1.8) && safetyPct<50));
-    // L3: only when really close (not just 40% safety)
-    const L3fixed = canExit && bp>=50&&safetyPct<25;
-    // L4: only extreme spikes very close to barrier
-    const L4fixed = canExit && n>=5&&(Math.abs(tickBuf[n-1].p-tickBuf[n-5].p)>atr*4.5&&safetyPct<40);
-    // L5: direction toward barrier only counts after 3+ ticks and only when very close
-    const L5fixed = canExit && n>=3&&safetyPct<35&&((nearBar===con.upper&&tickBuf[n-1].p>tickBuf[n-2].p)||(nearBar===con.lower&&tickBuf[n-1].p<tickBuf[n-2].p));
-    // L6: hold score shield — only exit when dangerously low AND close to barrier
-    const L6fixed = canExit && hs<40&&safetyPct<30;
-    // Keep L1,L7,L8,L9,L10,L11 as-is but gate with canExit
-    const L1g=canExit&&L1, L7g=canExit&&L7, L8g=canExit&&L8, L9g=canExit&&L9, L10g=canExit&&L10, L11g=canExit&&L11;
-
-    const shouldExit=aiOn&&con.byAI&&canExit&&(L1g||L2fixed||L3fixed||L4fixed||L5fixed||L6fixed||L7g||L8g||L9g||L10g||L11g);
-    if(shouldExit){
-      const reason=L1g?'Edge<0.04%':L2fixed?'BB+prox':L3fixed?'BP'+bp+'%<25%safe':L4fixed?'Spike×4.5':L5fixed?'→Bar<35%':L6fixed?'Hold<40%<30%':L7g?'TestBar<30%':L8g?'Accel×6':L9g?'TripleAlarm':L10g?'RSI ext':L11g?'MicroBurst':'ExitSig';
-      sniperExit(p,bp,reason);
+    if(!canExit || !aiOn || !con.byAI || con.pendingSell){
+      updateConUI();
+      if(p>=con.upper||p<=con.lower){
+        recordBreak(sym,con.ticks);updatePatternUI(sym);
+        $('chartWrap').classList.add('danger');
+        setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
+      }
+      if(tp&&con.pnl>=tp) sniperExit(p,0,'Take Profit');
       prevP=p;addTickRow(p,chg,t);
+      $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
+      return;
+    }
+
+    // ── shared stats (computed once, reused by all signals) ──────
+    const toBarDir = nearBar === con.upper; // true = upper barrier is nearer
+    const distPct  = safetyPct / 100;       // 1=centre, 0=at barrier
+
+    // ATR windows
+    const mv20 = tickBuf.slice(-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atr20 = mv20.reduce((a,b)=>a+b,0) / mv20.length || 0.0001;
+    const mv10 = mv20.slice(-10);
+    const atr10 = mv10.reduce((a,b)=>a+b,0) / mv10.length || 0.0001;
+
+    // Baseline ATR: oldest 20 ticks we have (pre-trade context)
+    const mvBase = tickBuf.slice(-60,-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atrBase = mvBase.length>=5 ? mvBase.reduce((a,b)=>a+b,0)/mvBase.length : atr20;
+
+    // SMA + StdDev (20)
+    const pr20 = tickBuf.slice(-20).map(b=>b.p);
+    const sma20 = pr20.reduce((a,b)=>a+b,0)/pr20.length;
+    const std20 = Math.sqrt(pr20.reduce((a,b)=>a+Math.pow(b-sma20,2),0)/pr20.length) || 0.0001;
+
+    // Signed moves toward barrier (positive = heading toward barrier)
+    const signedMoves = (k) => {
+      const out=[];
+      for(let i=n-k;i<n;i++){
+        const m = tickBuf[i].p - tickBuf[i-1].p;
+        out.push(toBarDir ? m : -m);
+      }
+      return out;
+    };
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // DANGER SCORE accumulator — max possible ≈ 100
+    // Each signal adds weighted points.  Exit threshold = 52.
+    // Low threshold catches danger early; signals require evidence.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let danger = 0;
+    let dangerReasons = [];
+
+    // ── Signal A: Momentum acceleration (weight 28) ──────────────
+    // 4 consecutive moves all toward barrier AND each ≥70% of prev.
+    // This is the clearest early warning: price is being driven.
+    if(n >= 6){
+      const sm4 = signedMoves(4);
+      const allToward4 = sm4.every(m=>m>0);
+      if(allToward4){
+        let accel=0;
+        for(let i=1;i<sm4.length;i++) if(sm4[i]>=sm4[i-1]*0.70) accel++;
+        const push4 = sm4.reduce((a,b)=>a+b,0);
+        const pushRatio = push4/half;
+        // Score scales with how much of the barrier gap was eaten
+        const pts = Math.min(28, accel*6 + pushRatio*200);
+        if(pts >= 10){ danger+=pts; dangerReasons.push('Accel('+Math.round(pts)+'pt)'); }
+      }
+    }
+
+    // ── Signal B: Volatility regime change (weight 20) ───────────
+    // Current short-term ATR vs baseline. When market enters a
+    // high-vol burst AND is moving toward barrier, danger is high.
+    if(n >= 25){
+      const ratio = atr10 / atrBase;
+      if(ratio > 1.8){
+        const vel5 = tickBuf[n-1].p - tickBuf[n-5].p;
+        const toBar5 = toBarDir ? vel5>0 : vel5<0;
+        if(toBar5){
+          const pts = Math.min(20, (ratio-1.8)*18 + 8);
+          danger+=pts; dangerReasons.push('VolBurst×'+ratio.toFixed(1));
+        }
+      }
+    }
+
+    // ── Signal C: Proximity cascade (weight 30) ──────────────────
+    // Not a linear function — danger is exponential as you approach.
+    // 40%→2pts, 30%→6pts, 20%→14pts, 15%→20pts, 10%→28pts, <8%→30pts
+    if(safetyPct < 40){
+      const proxPts = Math.min(30, Math.pow((40-safetyPct)/40, 1.6) * 32);
+      danger+=proxPts; dangerReasons.push('Prox'+safetyPct.toFixed(1)+'%');
+    }
+
+    // ── Signal D: RSI exhaustion (weight 18) ─────────────────────
+    // RSI>75 toward upper barrier means recent ticks are overwhelmingly
+    // upward — momentum is extended and likely to continue, not reverse.
+    if(n >= 10){
+      const rWin = Math.min(10, n-1);
+      let g=0, l=0;
+      for(let i=n-rWin;i<n;i++){
+        const mv = tickBuf[i].p - tickBuf[i-1].p;
+        if(mv>0) g+=mv; else l+=Math.abs(mv);
+      }
+      const rsi = 100 - 100/(1 + (g/rWin)/((l/rWin)||0.0001));
+      const extremeToBar = (toBarDir && rsi>72) || (!toBarDir && rsi<28);
+      if(extremeToBar && safetyPct<45){
+        const rsiDev = toBarDir ? (rsi-72)/28 : (28-rsi)/28;
+        const pts = Math.min(18, rsiDev*18 + (45-safetyPct)*0.15);
+        danger+=pts; dangerReasons.push('RSI'+(toBarDir?Math.round(rsi):Math.round(100-rsi)));
+      }
+    }
+
+    // ── Signal E: Tick-size escalation (weight 16) ───────────────
+    // Are the last 3 ticks individually bigger than the ATR baseline?
+    // Escalating size toward barrier = institutional momentum.
+    if(n >= 8 && safetyPct < 50){
+      const last3sizes = [1,2,3].map(i=>Math.abs(tickBuf[n-i].p - tickBuf[n-i-1].p));
+      const last3toward = [1,2,3].every(i=>{ const m=tickBuf[n-i].p-tickBuf[n-i-1].p; return toBarDir?m>0:m<0; });
+      if(last3toward){
+        const avgSz3 = last3sizes.reduce((a,b)=>a+b,0)/3;
+        const szRatio = avgSz3/atrBase;
+        if(szRatio > 1.5){
+          const pts = Math.min(16, (szRatio-1.5)*10 + (50-safetyPct)*0.1);
+          danger+=pts; dangerReasons.push('BigTick×'+szRatio.toFixed(1));
+        }
+      }
+    }
+
+    // ── Signal F: Bollinger deviation (weight 14) ────────────────
+    // Price >2σ from mean AND toward barrier means the move is
+    // statistically extreme — high probability it continues to barrier.
+    if(n >= 20 && safetyPct < 40 && std20>0){
+      const dev = Math.abs(p - sma20) / std20;
+      const movingToBar = toBarDir ? p>sma20 : p<sma20;
+      if(dev > 1.7 && movingToBar){
+        const pts = Math.min(14, (dev-1.7)*14);
+        danger+=pts; dangerReasons.push('BB+'+dev.toFixed(1)+'σ');
+      }
+    }
+
+    // ── Signal G: Break probability confirmation (weight 12) ─────
+    // computeBreakProb is already a composite score. Use it as
+    // a confirming signal when it's high — not as a sole trigger.
+    if(bp >= 55 && safetyPct < 35){
+      const pts = Math.min(12, (bp-55)*0.24);
+      danger+=pts; dangerReasons.push('BP'+bp+'%');
+    }
+
+    // ── Signal H: Absolute critical zone (weight 25, instant) ────
+    // Price within 8% of barrier gap — regardless of other signals,
+    // this is too close to hold. Exit immediately.
+    if(safetyPct < 8){
+      danger += 25; dangerReasons.push('CRITICAL<8%');
+    }
+
+    // ── Final decision ────────────────────────────────────────────
+    // Threshold 52: requires at least 2 meaningful signals coinciding.
+    // Single weak signals (e.g. only proximity at 38%) won't fire.
+    const DANGER_THRESHOLD = 52;
+    const shouldExit = danger >= DANGER_THRESHOLD;
+
+    if(shouldExit){
+      const topReason = dangerReasons.slice(0,2).join('+');
+      sniperExit(p, bp, topReason+'['+Math.round(danger)+']');
+      prevP=p; addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
     }
 
     updateConUI();
     if(p>=con.upper||p<=con.lower){
-      // Price approaching/hitting barrier — let Deriv confirm via proposal_open_contract
-      // Do NOT call onKO() locally — Deriv is the authority on barrier breach
-      // Just visual warning so user knows
-      recordBreak(sym,con.ticks);updatePatternUI(sym);
+      recordBreak(sym,con.ticks); updatePatternUI(sym);
       $('chartWrap').classList.add('danger');
       setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
-      prevP=p;addTickRow(p,chg,t);
+      prevP=p; addTickRow(p,chg,t);
       return;
     }
-    if(tp&&con.pnl>=tp&&con.ticks>=2)sniperExit(p,0,'Take Profit');
+    if(tp&&con.pnl>=tp) sniperExit(p,0,'Take Profit');
   }
 
   if(!isHistory){
@@ -2243,87 +2327,112 @@ function analyzeHistoricalBreaks(symKey) {
     prevP=p; // Still update prevP for historical chain
   }
 }
-// BREAK PROBABILITY — pure market analysis, 10 factors
-// CRITICAL: Distance clamp ensures score can ONLY be high near barrier
-// ═══════════════════════════════════════════
-function computeBreakProb(price,contract,buf){
-  if(!contract||!contract.upper||!contract.lower||buf.length<20)return 0;
-  let score=0;
+// BREAK PROBABILITY — displayed on exit meter, used as Signal G
+// Returns 0-100. Combines proximity + momentum + volatility regime.
+function computeBreakProb(price, contract, buf){
+  if(!contract||!contract.upper||!contract.lower||buf.length<8) return 0;
   const n=buf.length;
-  const upper=contract.upper,lower=contract.lower;
+  const upper=contract.upper, lower=contract.lower;
   const half=(upper-lower)/2;
-  const dU=upper-price,dL=price-lower;
+  const dU=upper-price, dL=price-lower;
   const nearDist=Math.min(dU,dL);
   const nearBar=dU<dL?upper:lower;
-  const proxRatio=1-(nearDist/half);
+  const toBarDir=nearBar===upper;
+  const distRatio=nearDist/half; // 1=centre 0=barrier
 
-  // ═══════════════════════════════════════════
-  // INDICATOR MATRIX: Bollinger Bands & Keltner Channels
-  // ═══════════════════════════════════════════
-  const prices = buf.slice(-20).map(b=>b.p);
-  const sma = prices.reduce((a,b)=>a+b,0)/20;
-  const std = Math.sqrt(prices.reduce((a,b)=>a+Math.pow(b-sma,2),0)/20);
-  const bbUpper = sma + (std * 2);
-  const bbLower = sma - (std * 2);
-  
-  // Keltner Channels (using simple range for ATR approximation)
-  const ranges = buf.slice(-20).map((b,i,ar)=>i===0?0:Math.abs(b.p-ar[i-1].p));
-  const atr = ranges.reduce((a,b)=>a+b,0)/20;
-  const kcUpper = sma + (atr * 2.5);
-  const kcLower = sma - (atr * 2.5);
+  // Hard clamp: score cannot be high when far from barrier
+  // This prevents the meter from scaring the user unnecessarily
+  const maxByDist = distRatio>0.80?5 : distRatio>0.65?15 : distRatio>0.50?30
+                  : distRatio>0.35?52 : distRatio>0.20?72 : 100;
 
-  // F1: Bollinger Band Breach (Predictive), 30pts
-  if(nearBar===upper && price > bbUpper) score += 30;
-  if(nearBar===lower && price < bbLower) score += 30;
+  let score=0;
 
-  // F2: Keltner Channel Extreme, 20pts
-  if(nearBar===upper && price > kcUpper) score += 20;
-  if(nearBar===lower && price < kcLower) score += 20;
+  // P1: Proximity — exponential (0-40)
+  score += Math.min(40, Math.pow(1-distRatio, 2.2)*42);
 
-  // F3: Proximity — exponential, 25pts max
-  score+=Math.max(0,Math.pow(proxRatio,1.8)*25);
+  // P2: Velocity toward barrier over 5 ticks (0-20)
+  if(n>=6){
+    const vel5 = buf[n-1].p - buf[n-5].p;
+    const toBar = toBarDir?vel5>0:vel5<0;
+    const mv5 = buf.slice(-5).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atr5 = mv5.reduce((a,b)=>a+b,0)/5||0.0001;
+    if(toBar) score += Math.min(20, Math.abs(vel5)/(atr5*5)*20);
+  }
 
-  // F4: Velocity toward barrier, 15pts
-  const vWin=Math.min(5,n-1);
-  const vel=(buf[n-1].p-buf[n-1-vWin].p)/vWin;
-  const velToBar=(nearBar===upper&&vel>0)||(nearBar===lower&&vel<0);
-  if(velToBar)score+=Math.min(15,Math.abs(vel)/half*1500);
+  // P3: Consecutive ticks toward barrier (0-20)
+  if(n>=5){
+    let streak=0;
+    for(let i=n-1;i>=n-4;i--){
+      const m=buf[i].p-buf[i-1].p;
+      if(toBarDir?m>0:m<0) streak++; else break;
+    }
+    score += streak*5;
+  }
 
-  // F5: Neural Spike-Guard (Predictive Analysis)
-  const microVol=Math.sqrt(prices.slice(-5).reduce((a,b,i,arr)=>a+Math.pow(b-(arr.reduce((x,y)=>x+y,0)/5),2),0)/5);
-  if(microVol > std * 1.5 || microVol < std * 0.2) score += 25;
+  // P4: ATR expansion vs baseline (0-20)
+  if(n>=30){
+    const mv10=buf.slice(-10).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atr10=mv10.reduce((a,b)=>a+b,0)/10||0.0001;
+    const mvBase=buf.slice(-40,-10).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atrBase=mvBase.reduce((a,b)=>a+b,0)/mvBase.length||atr10;
+    const ratio=atr10/atrBase;
+    if(ratio>1.5) score+=Math.min(20,(ratio-1.5)*14);
+  }
 
-  // ═══ CRITICAL DISTANCE CLAMP ═══
-  // This is the KEY to preventing early exits:
-  // Score is physically impossible to be high when price is far from barrier
-  const distRatio=nearDist/half; // 1=center(safe), 0=at barrier(danger)
-  if(distRatio>0.85)score=Math.min(score,2);
-  else if(distRatio>0.70)score=Math.min(score,8);
-  else if(distRatio>0.55)score=Math.min(score,20);
-  else if(distRatio>0.40)score=Math.min(score,38);
-  else if(distRatio>0.25)score=Math.min(score,60);
-  // Only when within 25% of barrier can score exceed 60%
-
-  return Math.min(100,Math.max(0,Math.round(score)));
+  return Math.min(maxByDist, Math.min(100, Math.max(0, Math.round(score))));
 }
 
 // ═══════════════════════════════════════════
 // HOLD SCORE
 // ═══════════════════════════════════════════
-function computeHoldScore(price,contract,buf){
-  if(!contract||buf.length<3)return 50;
+function computeHoldScore(price, contract, buf){
+  // Returns 0-100: how safe it is to keep holding.
+  // 100 = perfectly safe. 0 = exit immediately.
+  if(!contract||buf.length<4) return 50;
   const n=buf.length;
-  const upper=contract.upper,lower=contract.lower;
+  const upper=contract.upper, lower=contract.lower;
   const half=(upper-lower)/2;
-  const dU=upper-price,dL=price-lower;
+  const dU=upper-price, dL=price-lower;
   const nearDist=Math.min(dU,dL);
   const nearBar=dU<dL?upper:lower;
+  const toBarDir=nearBar===upper;
   const distRatio=nearDist/half;
+
   let score=100;
-  score-=Math.pow(1-distRatio,1.5)*65;
-  if(n>=3){const v1=buf[n-1].p-buf[n-2].p;const toBar=(nearBar===upper&&v1>0)||(nearBar===lower&&v1<0);if(toBar)score-=Math.min(25,Math.abs(v1)/half*1000);}
-  if(n>=14){const r=buf.slice(n-14).map(b=>b.p);const m=r.reduce((a,b)=>a+b,0)/14;const std=Math.sqrt(r.reduce((a,b)=>a+Math.pow(b-m,2),0)/14);const rv=(std/price)*100;if(rv<0.07)score+=8;else if(rv>0.22)score-=12;}
-  return Math.min(100,Math.max(0,Math.round(score)));
+
+  // H1: Proximity penalty — exponential
+  score -= Math.pow(1-distRatio, 1.8) * 55;
+
+  // H2: Directional momentum penalty — last 4 ticks
+  if(n>=5){
+    const sm4=[1,2,3,4].map(i=>{const m=buf[n-i].p-buf[n-i-1].p; return toBarDir?m:-m;});
+    const towardCount=sm4.filter(m=>m>0).length;
+    const towardWeight=sm4.filter(m=>m>0).reduce((a,b)=>a+b,0);
+    const mv4=buf.slice(-5).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atr4=mv4.reduce((a,b)=>a+b,0)/4||0.0001;
+    score -= (towardCount/4)*15 + Math.min(10, towardWeight/(atr4*4)*10);
+  }
+
+  // H3: Volatility context — higher vol = harder to hold safely
+  if(n>=20){
+    const mv20=buf.slice(-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atr20=mv20.reduce((a,b)=>a+b,0)/20||0.0001;
+    const mvBase=buf.slice(-50,-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
+    const atrBase=mvBase.length>=5?mvBase.reduce((a,b)=>a+b,0)/mvBase.length:atr20;
+    const volRatio=atr20/atrBase;
+    if(volRatio>1.4) score -= Math.min(12,(volRatio-1.4)*16);
+    if(volRatio<0.7) score += 8; // low volatility = safer hold
+  }
+
+  // H4: Mean reversion bonus — if price is returning to center, safer
+  if(n>=5){
+    const center=(upper+lower)/2;
+    const vel3=buf[n-1].p-buf[n-3].p;
+    const movingToCenter = (price>center && vel3<0) || (price<center && vel3>0);
+    if(movingToCenter) score+=10;
+  }
+
+  return Math.min(100, Math.max(0, Math.round(score)));
 }
 
 // ═══════════════════════════════════════════
@@ -2983,6 +3092,7 @@ function closeContract(reason, fromAI){
     }
     console.log('[Close] Sending sell for',realId,'reason:',reason);
     send({sell:realId, price:0});
+    con.pendingSell = true;  // marks that a sell is in-flight to Deriv
     toast('⏳ Selling…', 'g', 3000);
 
     // Safety: if sell response doesn't arrive in 15s, force-clear state
