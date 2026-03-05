@@ -553,14 +553,14 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <div class="login-overlay" id="loginOverlay">
   <div class="login-card">
     <div class="login-logo">🎯</div>
-    <div class="login-title">Deriv Accumulator AI Sniper</div>
+    <div class="login-title">Deriv Accumulator Super-AI Sniper Pro</div>
     <div class="login-sub">Connect your Deriv account (Real or Demo). AI Sniper analyzes every tick and executes real trades on your Deriv account.</div>
     <div class="login-sub-msg" style="color:var(--gold);font-size:10px;margin-bottom:8px;">⚡ Login to access both your Real and Demo accounts</div>
     <div class="login-features">
-      <div class="login-feat"><div class="login-feat-icon">🤖</div><div class="login-feat-text"><div class="t">AI Sniper Engine</div><div class="s">100-tick pattern analysis</div></div></div>
+      <div class="login-feat"><div class="login-feat-icon">🧠</div><div class="login-feat-text"><div class="t">Super-AI Engine</div><div class="s">Micro-Regime & Pressure Analysis</div></div></div>
       <div class="login-feat"><div class="login-feat-icon">🎤</div><div class="login-feat-text"><div class="t">Voice AI — ARIA</div><div class="s">English & Kiswahili</div></div></div>
       <div class="login-feat"><div class="login-feat-icon">🔭</div><div class="login-feat-text"><div class="t">Volatility Scanner</div><div class="s">Auto-selects best market</div></div></div>
-      <div class="login-feat"><div class="login-feat-icon">💰</div><div class="login-feat-text"><div class="t">Zero Loss Target</div><div class="s">Sniper exit before break</div></div></div>
+      <div class="login-feat"><div class="login-feat-icon">🎯</div><div class="login-feat-text"><div class="t">Sniper Exit v2</div><div class="s">Predictive Line-Break Avoidance</div></div></div>
     </div>
     <a class="btn-login" id="loginBtn" href="https://oauth.deriv.com/oauth2/authorize?app_id=129093&l=EN&brand=deriv" target="_top">
         <svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="48" fill="#CC2936"/><path d="M28 72 L50 28 L72 72 Z" fill="white"/></svg>
@@ -2304,6 +2304,12 @@ function analyzeHistoricalBreaks(symKey) {
     // ── EXIT DECISIONS ─────────────────────────────────────────────
     let exitReason='';
 
+    // ── SUPER-AI PREDICTIVE EXIT ──
+    const dangerScore = SuperAI.computeBreakProb(p, con, tickBuf);
+    if (!exitReason && dangerScore >= SuperAI.config.dangerExit) {
+      exitReason = '🎯AI:' + dangerScore + '%';
+    }
+
     // ── PREDICTIVE: linear regression projects price outside barrier ──
     if(!exitReason && n>=10){
       const _pts=tickBuf.slice(-10).map(b=>b.p);
@@ -2434,155 +2440,67 @@ function analyzeHistoricalBreaks(symKey) {
 // Returns breakProb 0-100 (chance barrier is hit in next 5 ticks)
 // ══════════════════════════════════════════════════════════════════
 
-function computeBreakProb(price, contract, buf){
-  if(!contract||!contract.upper||!contract.lower||buf.length<10) return 0;
-  const n=buf.length;
-  const upper=contract.upper, lower=contract.lower;
-  const half=(upper-lower)/2;
-  const dU=upper-price, dL=price-lower;
-  const nearDist=Math.min(dU,dL);
-  const nearBar=dU<dL?upper:lower;
-  const toBarDir=nearBar===upper;
-  const distRatio=nearDist/half; // 1=centre, 0=barrier edge
-
-  // Base proximity cap
-  const maxByDist=distRatio>0.85?5:distRatio>0.70?12:distRatio>0.55?28
-                 :distRatio>0.40?48:distRatio>0.25?68:100;
-
-  // ── Shared baseline ──────────────────────────────────────────
-  const moves=[];
-  for(let i=1;i<n;i++) moves.push(Math.abs(buf[i].p-buf[i-1].p));
-  const sorted=[...moves].sort((a,b)=>a-b);
-  const medATR=sorted[Math.floor(sorted.length/2)]||0.0001;
-  const atr10=moves.slice(-10).reduce((a,b)=>a+b,0)/10||medATR;
-
-  let danger=0; // accumulates 0-100
-
-  // ── M1: Linear Regression Projection (weight 22%) ─────────────
-  // Fit line to last 10 ticks, project 5 ticks forward
-  if(n>=10){
-    const pts=buf.slice(-10).map(b=>b.p);
-    const W=pts.length, xm=(W-1)/2, ym=pts.reduce((a,b)=>a+b,0)/W;
-    let num=0,den=0;
-    for(let i=0;i<W;i++){num+=(i-xm)*(pts[i]-ym);den+=(i-xm)**2;}
-    const slope=den>0?num/den:0;
-    const proj3=price+slope*3;
-    const proj5=price+slope*5;
-    // Safety% at projected positions
-    const safe3=(Math.min(upper-proj3,proj3-lower)/half)*100;
-    const safe5=(Math.min(upper-proj5,proj5-lower)/half)*100;
-    const minSafe=Math.min(safe3,safe5);
-    if(minSafe<0) danger+=22; // projects outside barrier
-    else if(minSafe<15) danger+=18;
-    else if(minSafe<30) danger+=10;
-    else if(minSafe<45) danger+=4;
-  }
-
-  // ── M2: Exponential Weighted Velocity (weight 18%) ─────────────
-  // Recent ticks weighted more — captures accelerating moves
-  if(n>=6){
-    const W=Math.min(8,n-1); let velSum=0,wSum=0;
-    for(let i=0;i<W;i++){
-      const mv=buf[n-1-i].p-buf[n-2-i].p;
-      const w=W-i;
-      velSum+=mv*w; wSum+=w;
+const SuperAI = {
+  config: { regimeThreshold: 0.65, exhaustionTicks: 9, dangerExit: 65, entryThreshold: 55 },
+  detectRegime: function(buf) {
+    if (buf.length < 30) return 'STABLE';
+    const prices = buf.slice(-30).map(b => b.p);
+    const returns = [];
+    for (let i = 1; i < prices.length; i++) returns.push(prices[i] - prices[i-1]);
+    const mu = returns.reduce((a, b) => a + b, 0) / returns.length;
+    let cum = 0, maxD = -1e9, minD = 1e9;
+    for (const r of returns) { cum += r - mu; maxD = Math.max(maxD, cum); minD = Math.min(minD, cum); }
+    const R = maxD - minD, S = Math.sqrt(returns.reduce((a, b) => a + (b - mu) ** 2, 0) / returns.length) || 0.0001;
+    const hurst = Math.log(R / S) / Math.log(returns.length);
+    const medATR = [...returns].map(Math.abs).sort((a, b) => a - b)[15] || 0.0001;
+    const recentVol = returns.slice(-5).reduce((a, b) => a + Math.abs(b), 0) / 5;
+    const volRatio = recentVol / medATR;
+    if (volRatio > 2.5) return 'VOLATILE';
+    if (hurst > this.config.regimeThreshold) return 'TRENDING';
+    if (hurst < 0.45) return 'REVERTING';
+    return 'STABLE';
+  },
+  getPressure: function(buf) {
+    if (buf.length < 10) return 0;
+    const recent = buf.slice(-10);
+    let upVel = 0, downVel = 0, upCount = 0, downCount = 0;
+    for (let i = 1; i < recent.length; i++) {
+      const diff = recent[i].p - recent[i-1].p;
+      if (diff > 0) { upVel += diff; upCount++; }
+      else if (diff < 0) { downVel += Math.abs(diff); downCount++; }
     }
-    const ewVel=wSum>0?velSum/wSum:0;
-    const velToBar=toBarDir?ewVel:(-ewVel);
-    if(velToBar>0){
-      // Project: how many ticks until barrier at this velocity?
-      const ttb=nearDist/(velToBar||0.0001);
-      if(ttb<3) danger+=18;
-      else if(ttb<5) danger+=13;
-      else if(ttb<8) danger+=7;
+    const upPressure = upVel * (upCount > 0 ? upVel / upCount : 0);
+    const downPressure = downVel * (downCount > 0 ? downVel / downCount : 0);
+    return ((upPressure - downPressure) / (upPressure + downPressure || 0.0001)) * 100;
+  },
+  getExhaustion: function(buf) {
+    if (buf.length < 10) return 0;
+    let consecutive = 1, direction = buf[buf.length-1].p - buf[buf.length-2].p > 0 ? 1 : -1;
+    for (let i = buf.length-2; i > buf.length-10; i--) {
+      if ((buf[i].p - buf[i-1].p > 0 ? 1 : -1) === direction) consecutive++; else break;
     }
+    const last3 = Math.abs(buf[buf.length-1].p - buf[buf.length-4].p), prev3 = Math.abs(buf[buf.length-4].p - buf[buf.length-7].p);
+    return Math.min(100, (consecutive / this.config.exhaustionTicks) * 50 + (last3 < prev3 ? (prev3 - last3) / (prev3 || 0.0001) : 0) * 50);
+  },
+  computeBreakProb: function(price, contract, buf) {
+    if (!contract || !contract.upper || buf.length < 20) return 0;
+    const regime = this.detectRegime(buf), pressure = this.getPressure(buf), exhaustion = this.getExhaustion(buf);
+    const upper = contract.upper, lower = contract.lower, dU = upper - price, dL = price - lower;
+    const nearDist = Math.min(dU, dL), toUpper = dU < dL;
+    let danger = 0;
+    if (regime === 'VOLATILE') danger += 25;
+    if (regime === 'TRENDING' && ((toUpper && pressure > 20) || (!toUpper && pressure < -20))) danger += 35;
+    const pressureToBar = toUpper ? pressure : -pressure;
+    if (pressureToBar > 40) danger += 30; else if (pressureToBar > 20) danger += 15;
+    const moves = []; for (let i = buf.length-5; i < buf.length; i++) moves.push(Math.abs(buf[i].p - buf[i-1].p));
+    if ((moves.reduce((a, b) => a + b, 0) / 5) * 2 > nearDist) danger += 40;
+    if (!((toUpper && pressure > 0) || (!toUpper && pressure < 0)) && exhaustion > 70) danger -= 15;
+    return Math.min(100, Math.max(0, Math.round(danger)));
   }
+};
 
-  // ── M3: Kalman-like smoothed position estimate (weight 15%) ────
-  // Simple: smooth price with exponential filter, compare to barrier
-  if(n>=5){
-    let ks=buf[n-5].p; const K=0.4;
-    for(let i=n-4;i<n;i++) ks=ks*(1-K)+buf[i].p*K;
-    // Project 3 ticks ahead using current velocity of smooth estimate
-    const kVel=ks-buf[n-3].p; // smooth velocity
-    const kProj=ks+kVel*3;
-    const kSafe=(Math.min(upper-kProj,kProj-lower)/half)*100;
-    if(kSafe<0) danger+=15;
-    else if(kSafe<20) danger+=11;
-    else if(kSafe<35) danger+=5;
-  }
-
-  // ── M4: Oscillation cycle predictor (weight 12%) ───────────────
-  // Count zero-crossings of displacement from mean → estimate cycle phase
-  // If we're at the peak of a cycle heading toward barrier → danger
-  if(n>=20){
-    const pr=buf.slice(-20).map(b=>b.p);
-    const mu=pr.reduce((a,b)=>a+b,0)/20;
-    let zc=0;
-    for(let i=1;i<pr.length;i++){
-      if((pr[i]-mu)*(pr[i-1]-mu)<0) zc++;
-    }
-    // Recent net direction in last 5 ticks
-    const net5=buf[n-1].p-buf[n-5].p;
-    const toBar=toBarDir?net5>0:net5<0;
-    // Few zero crossings + heading toward barrier = trending (dangerous)
-    if(zc<4 && toBar && distRatio<0.6) danger+=12;
-    else if(zc<6 && toBar && distRatio<0.45) danger+=7;
-  }
-
-  // ── M5: Volatility-adjusted reach probability (weight 14%) ─────
-  // In N ticks a random walk covers ≈ sqrt(N)*ATR.
-  // Probability price reaches barrier in 5 ticks using normal approx.
-  if(n>=10){
-    const reach5=Math.sqrt(5)*atr10; // expected max displacement in 5 ticks
-    const reachRatio=reach5/nearDist; // >1 means barrier reachable
-    if(reachRatio>1.5) danger+=14;
-    else if(reachRatio>1.0) danger+=10;
-    else if(reachRatio>0.7) danger+=5;
-    else if(reachRatio>0.5) danger+=2;
-  }
-
-  // ── M6: ATR momentum burst (weight 10%) ────────────────────────
-  // Last 3 ticks average vs baseline — sudden energy spike
-  if(n>=4){
-    const atr3=moves.slice(-3).reduce((a,b)=>a+b,0)/3;
-    const ratio=atr3/medATR;
-    const lastDir=buf[n-1].p-buf[n-2].p;
-    const toBar=toBarDir?lastDir>0:lastDir<0;
-    if(ratio>3.0&&toBar) danger+=10;
-    else if(ratio>2.0&&toBar) danger+=6;
-    else if(ratio>1.5&&toBar) danger+=3;
-  }
-
-  // ── M7: Hurst exponent (weight 6%) ─────────────────────────────
-  // H>0.6 = trending price. Trend toward barrier = danger.
-  if(n>=20){
-    const hRets=[];
-    for(let i=1;i<=19;i++) hRets.push(buf[n-i].p-buf[n-i-1].p);
-    const hMu=hRets.reduce((a,b)=>a+b,0)/hRets.length;
-    let cum=0,maxD=-1e9,minD=1e9;
-    for(const r of hRets){cum+=r-hMu;maxD=Math.max(maxD,cum);minD=Math.min(minD,cum);}
-    const R=maxD-minD;
-    const S=Math.sqrt(hRets.reduce((a,b)=>a+(b-hMu)**2,0)/hRets.length)||0.0001;
-    const hurst=R>0&&S>0?Math.log(R/S)/Math.log(hRets.length):0.5;
-    const vel5=buf[n-1].p-buf[n-5].p;
-    const trendToBar=(toBarDir&&vel5>0)||(!toBarDir&&vel5<0);
-    if(hurst>0.65&&trendToBar&&distRatio<0.55) danger+=6;
-    else if(hurst>0.58&&trendToBar&&distRatio<0.40) danger+=3;
-  }
-
-  // ── M8: Spike cluster risk (weight 3%) ─────────────────────────
-  // If 2+ spikes occurred in last 15 ticks, market is in spike regime
-  if(n>=15){
-    let spikes=0;
-    for(let i=n-15;i<n;i++){
-      if(moves[i-1]&&moves[i-1]>medATR*3.0) spikes++;
-    }
-    if(spikes>=3) danger+=3;
-    else if(spikes>=2) danger+=1;
-  }
-
-  return Math.min(maxByDist, Math.min(100, Math.max(0, Math.round(danger))));
+function computeBreakProb(price, contract, buf) {
+  return SuperAI.computeBreakProb(price, contract, buf);
 }
 
 // ── PREDICTIVE HOLD SCORE (inverse of break probability) ─────────
@@ -3049,7 +2967,7 @@ function scheduleAlternativeGrowth(){
       }
       score+=s6;
 
-      const ENTER_THRESHOLD=58;
+      const ENTER_THRESHOLD=SuperAI.config.entryThreshold;
       const sig=score>=ENTER_THRESHOLD?'BUY':'WAIT';
       const scoreStr='sc:'+score+' v:'+s1+' r:'+s2+' rh:'+s3+' rsi:'+s4;
       _ui(sig, sig==='BUY'?scoreStr:'sc:'+score+'<'+ENTER_THRESHOLD+' '+scoreStr.slice(scoreStr.indexOf('v:')), sig==='BUY');
@@ -3063,8 +2981,12 @@ function scheduleAlternativeGrowth(){
           const _bd=barrierDist(price);
           const _fakeContract={upper:price+_bd,lower:price-_bd};
           const _fwdRisk=computeBreakProb(price,_fakeContract,buf);
-          if(_fwdRisk>35){
-            return _ui('WAIT','FwdRisk:'+_fwdRisk+'%>35');
+          const _regime = SuperAI.detectRegime(buf);
+          if(_regime === 'VOLATILE' || _regime === 'TRENDING'){
+            return _ui('WAIT', 'Bad Regime: ' + _regime);
+          }
+          if(_fwdRisk>30){
+            return _ui('WAIT','FwdRisk:'+_fwdRisk+'%>30');
           }
           doEntry(price, score);
         }
