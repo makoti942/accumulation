@@ -954,6 +954,9 @@ let hi=-Infinity,lo=Infinity,symBufs={};
 let chart=null,area=null,lineU=null,lineL=null,lineE=null;
 let con=null,exitingNow=false,realBalance=null;
 let aiOn=false,aiWins=0,aiLoss=0,aiTrades=0,aiPnl=0;
+let _autoScanInterval=null;
+function startAutoScan(){ if(_autoScanInterval)clearInterval(_autoScanInterval); _autoScanInterval=setInterval(()=>{ if(authed&&ws&&ws.readyState===1) doVolScanAndSwitch(true); },45000); }
+function stopAutoScan(){ if(_autoScanInterval){clearInterval(_autoScanInterval);_autoScanInterval=null;} }
 let aiCool=false,phase='IDLE',scanAnim=0,exitProbability=0;
 let ticksHeld=0;
 let latestProposal=null,proposalStreamReqId=null;
@@ -1353,7 +1356,21 @@ function handle(d){
       if(ts===sym) {
         analyzeHistoricalBreaks(ts);
         updatePatternUI(ts);
-        toast('Loaded 100 historical ticks for '+ts,'g');
+        // Seed the area series with all historical data at once
+        if(area && priceHist.length>0){
+          try{ area.setData(priceHist.slice()); }catch(e){}
+        }
+        // Seed barrier preview lines with history
+        if(priceHist.length>0){
+          _ensureBarrierLines();
+          const _pLast=priceHist[priceHist.length-1].value;
+          const _bd=barrierDist(_pLast);
+          const _bU=latestProposal&&latestProposal.barrier&&latestProposal.sym===ts?latestProposal.barrier:_pLast+_bd;
+          const _bL=latestProposal&&latestProposal.low_barrier&&latestProposal.sym===ts?latestProposal.low_barrier:_pLast-_bd;
+          try{ lineU&&lineU.setData(priceHist.map(pt=>({time:pt.time,value:_bU}))); }catch(e){}
+          try{ lineL&&lineL.setData(priceHist.map(pt=>({time:pt.time,value:_bL}))); }catch(e){}
+        }
+        toast('📈 '+ts+' ready','g',1500);
       }
       
       if(symBufs[ts].length>TICK_BUF)symBufs[ts]=symBufs[ts].slice(-TICK_BUF);
@@ -1396,6 +1413,19 @@ function handle(d){
     const lowerBarrier=prop.current_spot_low_barrier||prop.low_barrier||null;
     const spotPrice=parseFloat(prop.spot||prop.current_spot||prevP||0);
     latestProposal={id:prop.id,ask_price:parseFloat(prop.ask_price),spot:spotPrice,barrier:upperBarrier?parseFloat(upperBarrier):0,low_barrier:lowerBarrier?parseFloat(lowerBarrier):0,sym:sym,gr:gr,ts:now()};
+    // Snap barrier lines to exact Deriv values immediately on every proposal tick
+    if(!con&&latestProposal.barrier&&latestProposal.low_barrier){
+      const _pt=Math.floor(Date.now()/1000);
+      _ensureBarrierLines();
+      try{if(lineU)lineU.update({time:_pt,value:latestProposal.barrier});}catch(e){}
+      try{if(lineL)lineL.update({time:_pt,value:latestProposal.low_barrier});}catch(e){}
+    }
+    // Update barrier lines immediately on each proposal tick (they track price)
+    if(!con&&prevP&&latestProposal.barrier){
+      const _t=Math.floor(Date.now()/1000);
+      try{if(lineU)lineU.update({time:_t,value:latestProposal.barrier});}catch(e){}
+      try{if(lineL)lineL.update({time:_t,value:latestProposal.low_barrier});}catch(e){}
+    }
     // If a buy is pending — verify req_id then fire the buy IMMEDIATELY
     if(buyPendingAfterStream&&isBuying){
       // Only act on the proposal response that belongs to OUR buy request.
@@ -1996,19 +2026,26 @@ function drawBarriers(){
 }
 function appendBarrierPts(t){
   _ensureBarrierLines();
-  if(con){
+  if(con&&con.realId){
+    // Active trade: show fixed confirmed barriers
     try{if(lineU)lineU.update({time:t,value:con.upper});}catch(e){}
     try{if(lineL)lineL.update({time:t,value:con.lower});}catch(e){}
-    try{if(lineE)lineE.update({time:t,value:con.entry});}catch(e){}
-  } else if(latestProposal&&latestProposal.barrier){
-    // No trade — track proposal barriers so lines move with price
-    try{if(lineU)lineU.update({time:t,value:latestProposal.barrier});}catch(e){}
-    try{if(lineL)lineL.update({time:t,value:latestProposal.low_barrier});}catch(e){}
-  } else if(prevP){
-    // No proposal yet — estimate from current price
-    const bd=barrierDist(prevP||0);
-    try{if(lineU)lineU.update({time:t,value:(prevP||0)+bd});}catch(e){}
-    try{if(lineL)lineL.update({time:t,value:(prevP||0)-bd});}catch(e){}
+    if(lineE&&con.entry)try{lineE.update({time:t,value:con.entry});}catch(e){}
+  } else {
+    // No trade: barriers track price using latest proposal or estimate
+    // This makes them "move with the chart" exactly like Deriv shows
+    const curP = prevP||0;
+    const bd = barrierDist(curP);
+    let bU, bL;
+    if(latestProposal&&latestProposal.barrier&&latestProposal.sym===sym){
+      bU=latestProposal.barrier;
+      bL=latestProposal.low_barrier;
+    } else {
+      bU=curP+bd;
+      bL=curP-bd;
+    }
+    try{if(lineU)lineU.update({time:t,value:bU});}catch(e){}
+    try{if(lineL)lineL.update({time:t,value:bL});}catch(e){}
   }
 }
 function clearBarriers(){
@@ -2262,8 +2299,29 @@ function analyzeHistoricalBreaks(symKey) {
     }
 
     // ── EXIT DECISIONS ────────────────────────────────────────────
-    // All exits require CONFIRMED signals — no plain streaks, only sized moves.
+    // Combines PREDICTIVE (where will price be in 3-5 ticks) with reactive.
     let exitReason='';
+
+    // ── PREDICTIVE L1: 5-tick linear projection outside barrier ───
+    // M1 + M2 combined: if both linear regression AND velocity
+    // project that price exits the barrier within 5 ticks — get out NOW
+    if(!exitReason && n>=10){
+      // Linear regression slope on last 10 ticks
+      const _pts=tickBuf.slice(-10).map(b=>b.p);
+      const _W=10,_xm=4.5,_ym=_pts.reduce((a,b)=>a+b,0)/10;
+      let _num=0,_den=0;
+      for(let i=0;i<10;i++){_num+=(i-_xm)*(_pts[i]-_ym);_den+=(i-_xm)**2;}
+      const _slope=_den>0?_num/_den:0;
+      const _proj3=price+_slope*3;
+      const _proj5=price+_slope*5;
+      const _s3=(Math.min(con.upper-_proj3,_proj3-con.lower)/half)*100;
+      const _s5=(Math.min(con.upper-_proj5,_proj5-con.lower)/half)*100;
+      if(_s3<5||_s5<-5){
+        exitReason='⚡Proj3:'+_s3.toFixed(0)+'%→KO';
+      } else if(_s3<18&&lastToBar){
+        exitReason='⚡Proj3:'+_s3.toFixed(0)+'%safe';
+      }
+    }
 
     // ══ LEVEL 1: Immediate exit (tick>=2) ═══════════════════════
 
@@ -2377,9 +2435,27 @@ function analyzeHistoricalBreaks(symKey) {
   }
 }
 // BREAK PROBABILITY — displayed on exit meter, used as Signal G
-// Returns 0-100. Combines proximity + momentum + volatility regime.
+// ══════════════════════════════════════════════════════════════════
+// PREDICTIVE ENGINE v1 — 8-METHOD FORECAST (3-5 TICKS AHEAD)
+// ══════════════════════════════════════════════════════════════════
+// Every method looks FORWARD by projecting from past 100 ticks.
+// We don't just measure "danger now" — we answer:
+// "Where will price LIKELY BE in 3-5 ticks from now?"
+//
+// M1. Linear Regression Projection   — slope × 3/5 ticks forward
+// M2. Exponential Weighted Velocity  — decaying momentum projection
+// M3. Kalman-like smoothed estimate  — noise-filtered next position
+// M4. Cycle/oscillation predictor    — ZC-count based wave forecast
+// M5. Volatility-adjusted range      — probabilistic distance band
+// M6. ATR momentum burst detector    — detects energy accumulation
+// M7. Hurst exponent regime          — trending vs mean-reverting
+// M8. Spike cluster risk             — are spikes bunching up?
+//
+// Returns breakProb 0-100 (chance barrier is hit in next 5 ticks)
+// ══════════════════════════════════════════════════════════════════
+
 function computeBreakProb(price, contract, buf){
-  if(!contract||!contract.upper||!contract.lower||buf.length<8) return 0;
+  if(!contract||!contract.upper||!contract.lower||buf.length<10) return 0;
   const n=buf.length;
   const upper=contract.upper, lower=contract.lower;
   const half=(upper-lower)/2;
@@ -2387,102 +2463,175 @@ function computeBreakProb(price, contract, buf){
   const nearDist=Math.min(dU,dL);
   const nearBar=dU<dL?upper:lower;
   const toBarDir=nearBar===upper;
-  const distRatio=nearDist/half; // 1=centre 0=barrier
+  const distRatio=nearDist/half; // 1=centre, 0=barrier edge
 
-  // Hard clamp: score cannot be high when far from barrier
-  // This prevents the meter from scaring the user unnecessarily
-  const maxByDist = distRatio>0.80?5 : distRatio>0.65?15 : distRatio>0.50?30
-                  : distRatio>0.35?52 : distRatio>0.20?72 : 100;
+  // Base proximity cap
+  const maxByDist=distRatio>0.85?5:distRatio>0.70?12:distRatio>0.55?28
+                 :distRatio>0.40?48:distRatio>0.25?68:100;
 
-  let score=0;
+  // ── Shared baseline ──────────────────────────────────────────
+  const moves=[];
+  for(let i=1;i<n;i++) moves.push(Math.abs(buf[i].p-buf[i-1].p));
+  const sorted=[...moves].sort((a,b)=>a-b);
+  const medATR=sorted[Math.floor(sorted.length/2)]||0.0001;
+  const atr10=moves.slice(-10).reduce((a,b)=>a+b,0)/10||medATR;
 
-  // P1: Proximity — exponential (0-40)
-  score += Math.min(40, Math.pow(1-distRatio, 2.2)*42);
+  let danger=0; // accumulates 0-100
 
-  // P2: Velocity toward barrier over 5 ticks (0-20)
+  // ── M1: Linear Regression Projection (weight 22%) ─────────────
+  // Fit line to last 10 ticks, project 5 ticks forward
+  if(n>=10){
+    const pts=buf.slice(-10).map(b=>b.p);
+    const W=pts.length, xm=(W-1)/2, ym=pts.reduce((a,b)=>a+b,0)/W;
+    let num=0,den=0;
+    for(let i=0;i<W;i++){num+=(i-xm)*(pts[i]-ym);den+=(i-xm)**2;}
+    const slope=den>0?num/den:0;
+    const proj3=price+slope*3;
+    const proj5=price+slope*5;
+    // Safety% at projected positions
+    const safe3=(Math.min(upper-proj3,proj3-lower)/half)*100;
+    const safe5=(Math.min(upper-proj5,proj5-lower)/half)*100;
+    const minSafe=Math.min(safe3,safe5);
+    if(minSafe<0) danger+=22; // projects outside barrier
+    else if(minSafe<15) danger+=18;
+    else if(minSafe<30) danger+=10;
+    else if(minSafe<45) danger+=4;
+  }
+
+  // ── M2: Exponential Weighted Velocity (weight 18%) ─────────────
+  // Recent ticks weighted more — captures accelerating moves
   if(n>=6){
-    const vel5 = buf[n-1].p - buf[n-5].p;
-    const toBar = toBarDir?vel5>0:vel5<0;
-    const mv5 = buf.slice(-5).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atr5 = mv5.reduce((a,b)=>a+b,0)/5||0.0001;
-    if(toBar) score += Math.min(20, Math.abs(vel5)/(atr5*5)*20);
-  }
-
-  // P3: Consecutive ticks toward barrier (0-20)
-  if(n>=5){
-    let streak=0;
-    for(let i=n-1;i>=n-4;i--){
-      const m=buf[i].p-buf[i-1].p;
-      if(toBarDir?m>0:m<0) streak++; else break;
+    const W=Math.min(8,n-1); let velSum=0,wSum=0;
+    for(let i=0;i<W;i++){
+      const mv=buf[n-1-i].p-buf[n-2-i].p;
+      const w=W-i;
+      velSum+=mv*w; wSum+=w;
     }
-    score += streak*5;
+    const ewVel=wSum>0?velSum/wSum:0;
+    const velToBar=toBarDir?ewVel:(-ewVel);
+    if(velToBar>0){
+      // Project: how many ticks until barrier at this velocity?
+      const ttb=nearDist/(velToBar||0.0001);
+      if(ttb<3) danger+=18;
+      else if(ttb<5) danger+=13;
+      else if(ttb<8) danger+=7;
+    }
   }
 
-  // P4: ATR expansion vs baseline (0-20)
-  if(n>=30){
-    const mv10=buf.slice(-10).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atr10=mv10.reduce((a,b)=>a+b,0)/10||0.0001;
-    const mvBase=buf.slice(-40,-10).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atrBase=mvBase.reduce((a,b)=>a+b,0)/mvBase.length||atr10;
-    const ratio=atr10/atrBase;
-    if(ratio>1.5) score+=Math.min(20,(ratio-1.5)*14);
-  }
-
-  return Math.min(maxByDist, Math.min(100, Math.max(0, Math.round(score))));
-}
-
-// ═══════════════════════════════════════════
-// HOLD SCORE
-// ═══════════════════════════════════════════
-function computeHoldScore(price, contract, buf){
-  // Returns 0-100: how safe it is to keep holding.
-  // 100 = perfectly safe. 0 = exit immediately.
-  if(!contract||buf.length<4) return 50;
-  const n=buf.length;
-  const upper=contract.upper, lower=contract.lower;
-  const half=(upper-lower)/2;
-  const dU=upper-price, dL=price-lower;
-  const nearDist=Math.min(dU,dL);
-  const nearBar=dU<dL?upper:lower;
-  const toBarDir=nearBar===upper;
-  const distRatio=nearDist/half;
-
-  let score=100;
-
-  // H1: Proximity penalty — exponential
-  score -= Math.pow(1-distRatio, 1.8) * 55;
-
-  // H2: Directional momentum penalty — last 4 ticks
+  // ── M3: Kalman-like smoothed position estimate (weight 15%) ────
+  // Simple: smooth price with exponential filter, compare to barrier
   if(n>=5){
-    const sm4=[1,2,3,4].map(i=>{const m=buf[n-i].p-buf[n-i-1].p; return toBarDir?m:-m;});
-    const towardCount=sm4.filter(m=>m>0).length;
-    const towardWeight=sm4.filter(m=>m>0).reduce((a,b)=>a+b,0);
-    const mv4=buf.slice(-5).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atr4=mv4.reduce((a,b)=>a+b,0)/4||0.0001;
-    score -= (towardCount/4)*15 + Math.min(10, towardWeight/(atr4*4)*10);
+    let ks=buf[n-5].p; const K=0.4;
+    for(let i=n-4;i<n;i++) ks=ks*(1-K)+buf[i].p*K;
+    // Project 3 ticks ahead using current velocity of smooth estimate
+    const kVel=ks-buf[n-3].p; // smooth velocity
+    const kProj=ks+kVel*3;
+    const kSafe=(Math.min(upper-kProj,kProj-lower)/half)*100;
+    if(kSafe<0) danger+=15;
+    else if(kSafe<20) danger+=11;
+    else if(kSafe<35) danger+=5;
   }
 
-  // H3: Volatility context — higher vol = harder to hold safely
+  // ── M4: Oscillation cycle predictor (weight 12%) ───────────────
+  // Count zero-crossings of displacement from mean → estimate cycle phase
+  // If we're at the peak of a cycle heading toward barrier → danger
   if(n>=20){
-    const mv20=buf.slice(-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atr20=mv20.reduce((a,b)=>a+b,0)/20||0.0001;
-    const mvBase=buf.slice(-50,-20).map((b,i,a)=>i===0?0:Math.abs(b.p-a[i-1].p));
-    const atrBase=mvBase.length>=5?mvBase.reduce((a,b)=>a+b,0)/mvBase.length:atr20;
-    const volRatio=atr20/atrBase;
-    if(volRatio>1.4) score -= Math.min(12,(volRatio-1.4)*16);
-    if(volRatio<0.7) score += 8; // low volatility = safer hold
+    const pr=buf.slice(-20).map(b=>b.p);
+    const mu=pr.reduce((a,b)=>a+b,0)/20;
+    let zc=0;
+    for(let i=1;i<pr.length;i++){
+      if((pr[i]-mu)*(pr[i-1]-mu)<0) zc++;
+    }
+    // Recent net direction in last 5 ticks
+    const net5=buf[n-1].p-buf[n-5].p;
+    const toBar=toBarDir?net5>0:net5<0;
+    // Few zero crossings + heading toward barrier = trending (dangerous)
+    if(zc<4 && toBar && distRatio<0.6) danger+=12;
+    else if(zc<6 && toBar && distRatio<0.45) danger+=7;
   }
 
-  // H4: Mean reversion bonus — if price is returning to center, safer
-  if(n>=5){
-    const center=(upper+lower)/2;
-    const vel3=buf[n-1].p-buf[n-3].p;
-    const movingToCenter = (price>center && vel3<0) || (price<center && vel3>0);
-    if(movingToCenter) score+=10;
+  // ── M5: Volatility-adjusted reach probability (weight 14%) ─────
+  // In N ticks a random walk covers ≈ sqrt(N)*ATR.
+  // Probability price reaches barrier in 5 ticks using normal approx.
+  if(n>=10){
+    const reach5=Math.sqrt(5)*atr10; // expected max displacement in 5 ticks
+    const reachRatio=reach5/nearDist; // >1 means barrier reachable
+    if(reachRatio>1.5) danger+=14;
+    else if(reachRatio>1.0) danger+=10;
+    else if(reachRatio>0.7) danger+=5;
+    else if(reachRatio>0.5) danger+=2;
   }
 
-  return Math.min(100, Math.max(0, Math.round(score)));
+  // ── M6: ATR momentum burst (weight 10%) ────────────────────────
+  // Last 3 ticks average vs baseline — sudden energy spike
+  if(n>=4){
+    const atr3=moves.slice(-3).reduce((a,b)=>a+b,0)/3;
+    const ratio=atr3/medATR;
+    const lastDir=buf[n-1].p-buf[n-2].p;
+    const toBar=toBarDir?lastDir>0:lastDir<0;
+    if(ratio>3.0&&toBar) danger+=10;
+    else if(ratio>2.0&&toBar) danger+=6;
+    else if(ratio>1.5&&toBar) danger+=3;
+  }
+
+  // ── M7: Hurst exponent (weight 6%) ─────────────────────────────
+  // H>0.6 = trending price. Trend toward barrier = danger.
+  if(n>=20){
+    const hRets=[];
+    for(let i=1;i<=19;i++) hRets.push(buf[n-i].p-buf[n-i-1].p);
+    const hMu=hRets.reduce((a,b)=>a+b,0)/hRets.length;
+    let cum=0,maxD=-1e9,minD=1e9;
+    for(const r of hRets){cum+=r-hMu;maxD=Math.max(maxD,cum);minD=Math.min(minD,cum);}
+    const R=maxD-minD;
+    const S=Math.sqrt(hRets.reduce((a,b)=>a+(b-hMu)**2,0)/hRets.length)||0.0001;
+    const hurst=R>0&&S>0?Math.log(R/S)/Math.log(hRets.length):0.5;
+    const vel5=buf[n-1].p-buf[n-5].p;
+    const trendToBar=(toBarDir&&vel5>0)||(!toBarDir&&vel5<0);
+    if(hurst>0.65&&trendToBar&&distRatio<0.55) danger+=6;
+    else if(hurst>0.58&&trendToBar&&distRatio<0.40) danger+=3;
+  }
+
+  // ── M8: Spike cluster risk (weight 3%) ─────────────────────────
+  // If 2+ spikes occurred in last 15 ticks, market is in spike regime
+  if(n>=15){
+    let spikes=0;
+    for(let i=n-15;i<n;i++){
+      if(moves[i-1]&&moves[i-1]>medATR*3.0) spikes++;
+    }
+    if(spikes>=3) danger+=3;
+    else if(spikes>=2) danger+=1;
+  }
+
+  return Math.min(maxByDist, Math.min(100, Math.max(0, Math.round(danger))));
 }
+
+// ── PREDICTIVE HOLD SCORE (inverse of break probability) ─────────
+// Returns 0-100: how SAFE it is to hold for next 5 ticks
+function computeHoldScore(price, contract, buf){
+  if(!contract||buf.length<4) return 50;
+  const bp=computeBreakProb(price,contract,buf);
+  // Invert and scale: high break prob = low hold score
+  // Also add centre bonus and mean-reversion bonus
+  const n=buf.length;
+  const upper=contract.upper,lower=contract.lower;
+  const centre=(upper+lower)/2;
+  const half=(upper-lower)/2;
+  const distRatio=Math.min(upper-price,price-lower)/half;
+
+  let hold=100-bp;
+
+  // Centre bonus: further from barrier = safer
+  hold += Math.min(10,(distRatio-0.5)*15);
+
+  // Mean reversion: price heading back to centre
+  if(n>=4){
+    const vel3=buf[n-1].p-buf[n-3].p;
+    if((price>centre&&vel3<0)||(price<centre&&vel3>0)) hold+=8;
+  }
+
+  return Math.min(100,Math.max(0,Math.round(hold)));
+}
+
 
 // ═══════════════════════════════════════════
 // EXIT METER
@@ -2671,15 +2820,21 @@ function doVolScanAndSwitch(silent){
 
     renderVolSide(results);
 
-    // NEVER auto-switch symbol when there's an active trade or buy in progress
-    if(aiOn && !con && !isBuying && results.length > 0){
+    // Auto-rotate symbol when not in a trade
+    if(!con && !isBuying && results.length > 0){
       const best = results[0];
       const currentScore = volScores[sym] ? volScores[sym].score : 0;
-      // Only switch if best is significantly better AND enough time has passed
-      if(now() - lastVolSwitch > 30000 && best.score > currentScore + 15 && best.sym !== sym){
+      const timeSinceSwitch = now() - lastVolSwitch;
+      // Switch if: best is 12+ pts better AND 20s have passed (fast rotation)
+      // OR best is 25+ pts better AND any time (emergency rotation)
+      const shouldSwitch = best.sym !== sym && (
+        (timeSinceSwitch > 20000 && best.score > currentScore + 12) ||
+        (best.score > currentScore + 25)
+      );
+      if(shouldSwitch){
         lastVolSwitch = now();
         switchSym(best.sym, best.dp);
-        toast('⚡ AI → ' + best.name + ' (score:'+best.score+')', 'p');
+        if(aiOn) toast('⚡ AI → ' + best.name + ' sc:'+best.score, 'p', 3000);
       }
     }
   },1500);
@@ -2785,7 +2940,7 @@ function scheduleAlternativeGrowth(){
     // ═══════════════════════════════════════════
     function runAI(price){
       // ═══════════════════════════════════════════════════════════════
-      // ENTRY ENGINE v7 — 6-SIGNAL COMPOSITE SCORE + 3 HARD BLOCKS
+      // ENTRY ENGINE v8 — PREDICTIVE + 6-SIGNAL COMPOSITE SCORE
       // ═══════════════════════════════════════════════════════════════
       // Score 0-100. Enter when score ≥ 60 AND no hard block active.
       // Each signal is independent — no single signal causes entry alone.
@@ -2923,6 +3078,14 @@ function scheduleAlternativeGrowth(){
         if(!authed||!activeToken||activeToken.length<10){
           $('sigSub').textContent='⏳ Auth…';
         } else {
+          // Final gate: run predictive forecast. If it says danger imminent, skip.
+          // We simulate barriers from current price and check next-5-tick risk.
+          const _bd=barrierDist(price);
+          const _fakeContract={upper:price+_bd,lower:price-_bd};
+          const _fwdRisk=computeBreakProb(price,_fakeContract,buf);
+          if(_fwdRisk>35){
+            return _ui('WAIT','FwdRisk:'+_fwdRisk+'%>35');
+          }
           doEntry(price, score);
         }
       }
@@ -3689,9 +3852,9 @@ function setupEvents(){
       phase='HUNTING';aiCool=false;exitingNow=false;updatePhaseUI();
       const acctLbl=(()=>{const a=accountList.find(x=>x.loginid===activeLoginid);return a?(a.is_virtual?'Demo':'Real'):'Real';})();
       $('sbAI').style.color='var(--purple)';toast('🤖 AI Sniper ACTIVE on '+acctLbl+' Account','p');
-      lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(false),1500);
+      lastVolSwitch=0;setTimeout(()=>doVolScanAndSwitch(false),1500);startAutoScan();
     }else{
-      phase='IDLE';updatePhaseUI();
+      phase='IDLE';updatePhaseUI();stopAutoScan();
       $('sbAI').textContent='AI:OFF';$('sbAI').style.color='var(--sub)';
       if(con&&con.byAI)closeContract('AI disabled',false);
     }
