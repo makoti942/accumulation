@@ -1348,7 +1348,7 @@ function handle(d){
         const price=parseFloat(p);
         symBufs[ts].push(price);
         if(ts===sym){
-          const tk={symbol:ts,quote:price,epoch:h.times[i]};
+          const tk={symbol:ts,quote:price,epoch:parseInt(h.times[i],10)};
           processTick(tk,true); // Pass true to indicate historical tick
         }
       });
@@ -2123,7 +2123,7 @@ function analyzeHistoricalBreaks(symKey) {
 // ═══════════════════════════════════════════
     // ── TICK PROCESSING ──
     function processTick(tick, isHistory){
-      const p=parseFloat(tick.quote),t=tick.epoch;
+      const p=parseFloat(tick.quote),t=parseInt(tick.epoch,10)||Math.floor(Date.now()/1000);
       if(p>hi)hi=p;if(p<lo)lo=p;
       
       // Immediate prevP sync to prevent "No price yet"
@@ -2156,6 +2156,9 @@ function analyzeHistoricalBreaks(symKey) {
   if(!isHistory){
     try{area.update(pt);}catch(e){}
     appendBarrierPts(t);
+  } else {
+    // For history ticks, update area inline (setData after all done is backup)
+    try{area.update(pt);}catch(e){}
   }
   
   // Update prevP for next tick calculation
@@ -2233,7 +2236,7 @@ function analyzeHistoricalBreaks(symKey) {
     const n = tickBuf.length;
     const canExit = con.ticks >= 2;
 
-    if(!canExit || !aiOn || !con.byAI || con.pendingSell){
+    if(!canExit || !aiOn || con.pendingSell){
       updateConUI();
       if(p>=con.upper||p<=con.lower){
         recordBreak(sym,con.ticks); updatePatternUI(sym);
@@ -2298,114 +2301,89 @@ function analyzeHistoricalBreaks(symKey) {
       }
     }
 
-    // ── EXIT DECISIONS ────────────────────────────────────────────
-    // Combines PREDICTIVE (where will price be in 3-5 ticks) with reactive.
+    // ── EXIT DECISIONS ─────────────────────────────────────────────
     let exitReason='';
 
-    // ── PREDICTIVE L1: 5-tick linear projection outside barrier ───
-    // M1 + M2 combined: if both linear regression AND velocity
-    // project that price exits the barrier within 5 ticks — get out NOW
+    // ── PREDICTIVE: linear regression projects price outside barrier ──
     if(!exitReason && n>=10){
-      // Linear regression slope on last 10 ticks
       const _pts=tickBuf.slice(-10).map(b=>b.p);
-      const _W=10,_xm=4.5,_ym=_pts.reduce((a,b)=>a+b,0)/10;
+      const _xm=4.5,_ym=_pts.reduce((a,b)=>a+b,0)/10;
       let _num=0,_den=0;
       for(let i=0;i<10;i++){_num+=(i-_xm)*(_pts[i]-_ym);_den+=(i-_xm)**2;}
       const _slope=_den>0?_num/_den:0;
-      const _proj3=price+_slope*3;
-      const _proj5=price+_slope*5;
+      const _proj3=p+_slope*3;
+      const _proj5=p+_slope*5;
       const _s3=(Math.min(con.upper-_proj3,_proj3-con.lower)/half)*100;
       const _s5=(Math.min(con.upper-_proj5,_proj5-con.lower)/half)*100;
-      if(_s3<5||_s5<-5){
-        exitReason='⚡Proj3:'+_s3.toFixed(0)+'%→KO';
-      } else if(_s3<18&&lastToBar){
-        exitReason='⚡Proj3:'+_s3.toFixed(0)+'%safe';
-      }
+      if(_s3<0||_s5<-10) exitReason='⚡Proj→KO('+_s3.toFixed(0)+'%)';
+      else if(_s3<20&&lastToBar) exitReason='⚡Proj'+_s3.toFixed(0)+'%';
     }
 
-    // ══ LEVEL 1: Immediate exit (tick>=2) ═══════════════════════
-
-    // E1: Spike toward barrier ≥3.5× median (false positive: ~0.5%)
-    if(!exitReason && lastToBar && spRatio>=3.5){
+    // ── LEVEL 1: Always fire (any tick ≥2) ────────────────────────
+    // E1: Big spike toward barrier
+    if(!exitReason && lastToBar && spRatio>=3.0)
       exitReason='⚡Spike×'+spRatio.toFixed(1);
-    }
 
-    // E2: Two consecutive big spikes toward barrier (both ≥2.5×)
-    if(!exitReason && n>=3 && lastToBar && spRatio>=2.5){
+    // E2: Two large ticks in a row toward barrier
+    if(!exitReason && n>=3 && lastToBar && spRatio>=2.2){
       const p2mv=Math.abs(tickBuf[n-2].p-tickBuf[n-3].p);
       const p2dir=tickBuf[n-2].p-tickBuf[n-3].p;
-      if(p2mv>=medATR*2.5 && (toBarDir?p2dir>0:p2dir<0)){
+      if(p2mv>=medATR*2.2 && (toBarDir?p2dir>0:p2dir<0))
         exitReason='⚡DblSpike×'+spRatio.toFixed(1);
-      }
     }
 
-    // E3: Critical zone — within 16% of barrier (one normal tick = KO)
-    if(!exitReason && safetyPct<16){
+    // E3: Safety critically low
+    if(!exitReason && safetyPct<20)
       exitReason='⚡CRIT'+safetyPct.toFixed(0)+'%';
-    }
 
-    // E4: ATR explosion — last 3 ticks avg ≥3× median AND toward barrier
-    // Detects sudden vol spike that will carry through barrier
+    // E4: ATR burst — last 3 ticks all large, all toward barrier
     if(!exitReason && n>=4){
-      const last3mv=[1,2,3].map(i=>Math.abs(tickBuf[n-i].p-tickBuf[n-i-1].p));
-      const last3dir=[1,2,3].map(i=>tickBuf[n-i].p-tickBuf[n-i-1].p);
-      const atr3=last3mv.reduce((a,b)=>a+b,0)/3;
-      const allToBar=last3dir.every(m=>toBarDir?m>0:m<0);
-      if(atr3>=medATR*3.0 && allToBar){
-        exitReason='⚡ATRblast×'+(atr3/medATR).toFixed(1);
-      }
+      const l3mv=[1,2,3].map(i=>Math.abs(tickBuf[n-i].p-tickBuf[n-i-1].p));
+      const l3dir=[1,2,3].map(i=>tickBuf[n-i].p-tickBuf[n-i-1].p);
+      if(l3mv.reduce((a,b)=>a+b,0)/3>=medATR*2.5 && l3dir.every(m=>toBarDir?m>0:m<0))
+        exitReason='⚡Burst×'+(l3mv.reduce((a,b)=>a+b,0)/3/medATR).toFixed(1);
     }
 
-    // ══ LEVEL 2: Exit after minHold (payout built) ══════════════
-
-    // E5: Power run — 3+ consecutive ticks ALL ≥1.5× median toward barrier
-    // False positive on pure noise: ~1.4% vs plain streak which is 64%
+    // ── LEVEL 2: Fire after minHold (payout built) ────────────────
+    // E5: 3+ consecutive above-average ticks toward barrier
     if(!exitReason && canExitSoft){
       let pw=0;
-      for(let i=n-1;i>=Math.max(1,n-5);i--){
+      for(let i=n-1;i>=Math.max(1,n-6);i--){
         const mv=tickBuf[i].p-tickBuf[i-1].p;
-        if((toBarDir?mv>0:mv<0) && Math.abs(mv)>=medATR*1.5) pw++; else break;
+        if((toBarDir?mv>0:mv<0)&&Math.abs(mv)>=medATR*1.3) pw++; else break;
       }
-      if(pw>=3) exitReason='🔮PowerRun×'+pw;
+      if(pw>=3) exitReason='🔮Run×'+pw;
     }
 
-    // E6: Proximity + above-normal push — safety<28% AND 2 of last 3 ticks big+toward
-    if(!exitReason && canExitSoft && safetyPct<28){
-      let bigPush=0;
-      for(let i=n-1;i>=Math.max(1,n-3);i--){
+    // E6: Getting close AND pushing toward barrier
+    if(!exitReason && canExitSoft && safetyPct<32){
+      let push=0;
+      for(let i=n-1;i>=Math.max(1,n-4);i--){
         const mv=tickBuf[i].p-tickBuf[i-1].p;
-        if((toBarDir?mv>0:mv<0) && Math.abs(mv)>=medATR*1.2) bigPush++;
+        if((toBarDir?mv>0:mv<0)&&Math.abs(mv)>=medATR*1.0) push++;
       }
-      if(bigPush>=2) exitReason='🔮Near'+safetyPct.toFixed(0)+'%+Push';
+      if(push>=2) exitReason='🔮Near'+safetyPct.toFixed(0)+'%';
     }
 
-    // E7: Bollinger Band breach toward barrier
+    // E7: Bollinger band breach toward barrier
     if(!exitReason && canExitSoft && bbFired &&
-       (bbFired.startsWith('BB:above')||bbFired.startsWith('BB:below'))){
+       (bbFired.startsWith('BB:above')||bbFired.startsWith('BB:below')))
       exitReason='🔮'+bbFired;
-    }
 
-    // E8: Acceleration — each successive toward-barrier tick is BIGGER than the last
-    // Means momentum is BUILDING, not fading — will continue to barrier
+    // E8: Accelerating momentum toward barrier (each tick bigger than last)
     if(!exitReason && canExitSoft && n>=5){
-      const acMvs=[];
+      const ac=[];
       for(let i=n-1;i>=n-4;i--){
         const mv=tickBuf[i].p-tickBuf[i-1].p;
-        if(toBarDir?mv>0:mv<0) acMvs.unshift(Math.abs(mv)); else break;
+        if(toBarDir?mv>0:mv<0) ac.unshift(Math.abs(mv)); else break;
       }
-      // 3+ ticks, each bigger than previous (accelerating toward barrier)
-      if(acMvs.length>=3){
-        const isAccel=acMvs.every((v,i,a)=>i===0||v>a[i-1]*0.85);
-        if(isAccel && acMvs[acMvs.length-1]>=medATR*1.3){
-          exitReason='🔮Accel×'+acMvs.length;
-        }
-      }
+      if(ac.length>=3 && ac.every((v,i,a)=>i===0||v>=a[i-1]*0.9) && ac[ac.length-1]>=medATR*1.2)
+        exitReason='🔮Accel×'+ac.length;
     }
 
-    // E9: Safety zone warning — within 24%, any toward-barrier pressure
-    if(!exitReason && canExitSoft && safetyPct<24){
+    // E9: Safety getting dangerously low
+    if(!exitReason && canExitSoft && safetyPct<26)
       exitReason='🔮Zone'+safetyPct.toFixed(0)+'%';
-    }
 
     if(exitReason){
       sniperExit(p, bp, exitReason);
@@ -2423,6 +2401,8 @@ function analyzeHistoricalBreaks(symKey) {
       return;
     }
     if(tp&&con.pnl>=tp) sniperExit(p,0,'Take Profit');
+
+
   }
 
   if(!isHistory){
