@@ -2139,6 +2139,7 @@ function analyzeHistoricalBreaks(symKey) {
     //    P4. EMA MACD momentum               — fast EMA crossing slow EMA toward barrier
     //    P5. Parabolic SAR direction         — trend direction aligned with barrier
     //    P6. Hurst exponent (20-tick)        — is movement trending or mean-reverting?
+    //    P7. Bollinger Bands (3 signals)      — band touch, %B extreme, squeeze breakout
     //
     //  LAYER 2 — REACTIVE RULES (fire NOW on confirmed danger)
     //    R1. Spike detection                 — last tick ≥2.5× median
@@ -2317,6 +2318,70 @@ function analyzeHistoricalBreaks(symKey) {
       const trendToBar=(toBarDir&&vel5>0)||(!toBarDir&&vel5<0);
       if(hurst>0.62 && trendToBar && safetyPct<50){
         predReason='Hurst:'+hurst.toFixed(2)+'trend<50%';
+      }
+    }
+
+    // ── P7: BOLLINGER BANDS — THREE EXIT SIGNALS ──────────────────
+    // Bollinger Bands = SMA(20) ± 2×StdDev(20).
+    // The bands define where price is statistically "normal".
+    // When price steps outside the bands toward the barrier, it is in
+    // statistically extreme territory and likely to continue — exit now.
+    //
+    // THREE BB SIGNALS (any one fires):
+    //  BB-1: Price ≥ upper band AND toward upper barrier
+    //        OR price ≤ lower band AND toward lower barrier
+    //        → "walking the band" = strong trend in barrier direction
+    //
+    //  BB-2: %B extreme — %B = (price−lowerBB)/(upperBB−lowerBB)
+    //        %B > 0.92 AND toward upper barrier → extreme position
+    //        %B < 0.08 AND toward lower barrier → extreme position
+    //
+    //  BB-3: Squeeze breakout — bands were tight (coiling), now
+    //        price breaks hard in barrier direction = energy release
+    if(!predReason && n>=20){
+      // Compute SMA(20) and StdDev(20)
+      const bbPrices=tickBuf.slice(-20).map(b=>b.p);
+      const bbSMA=bbPrices.reduce((a,b)=>a+b,0)/20;
+      const bbVar=bbPrices.reduce((a,b)=>a+Math.pow(b-bbSMA,2),0)/20;
+      const bbStd=Math.sqrt(bbVar)||0.0001;
+      const bbUpper=bbSMA+2*bbStd;
+      const bbLower=bbSMA-2*bbStd;
+      const bbWidth=(bbUpper-bbLower)/bbSMA*100; // bandwidth %
+      const bbPct=(p-bbLower)/(bbUpper-bbLower); // %B: 0=lower,1=upper,>1=above upper
+
+      // BB-1: Price outside band toward barrier
+      const aboveUpper = p>=bbUpper;
+      const belowLower = p<=bbLower;
+      if(!predReason){
+        if(aboveUpper && toBarDir){
+          predReason='BB:AboveUpper(%B='+bbPct.toFixed(2)+')';
+        } else if(belowLower && !toBarDir){
+          predReason='BB:BelowLower(%B='+bbPct.toFixed(2)+')';
+        }
+      }
+
+      // BB-2: %B extreme (within band but very near edge)
+      if(!predReason){
+        if(bbPct>0.92 && toBarDir && safetyPct<60){
+          predReason='BB:%B='+bbPct.toFixed(2)+'→upper';
+        } else if(bbPct<0.08 && !toBarDir && safetyPct<60){
+          predReason='BB:%B='+bbPct.toFixed(2)+'→lower';
+        }
+      }
+
+      // BB-3: Squeeze breakout — compare current width to 40-tick average width
+      if(!predReason && n>=40){
+        const bbOld=tickBuf.slice(-40,-20).map(b=>b.p);
+        const bbOldSMA=bbOld.reduce((a,b)=>a+b,0)/20;
+        const bbOldStd=Math.sqrt(bbOld.reduce((a,b)=>a+Math.pow(b-bbOldSMA,2),0)/20)||0.0001;
+        const bbOldWidth=(bbOldSMA+2*bbOldStd-(bbOldSMA-2*bbOldStd))/bbOldSMA*100;
+        // Squeeze: previous width was tight, current width is expanding
+        const wasSqueezed = bbOldWidth < bbWidth*0.7; // old bands tighter than current
+        const breakingOut = Math.abs(p-bbSMA) > bbStd*1.6; // current price far from SMA
+        const breakToBar = (toBarDir&&p>bbSMA)||(!toBarDir&&p<bbSMA);
+        if(wasSqueezed && breakingOut && breakToBar && safetyPct<65){
+          predReason='BB:SqzBrk(w='+bbWidth.toFixed(2)+'%)';
+        }
       }
     }
 
@@ -2825,25 +2890,61 @@ function scheduleAlternativeGrowth(){
     // AI ENGINE — fast hunting, smart entry
     // ═══════════════════════════════════════════
     function runAI(price){
-      // ════════════════════════════════════════════════════════════
-      // ENTRY ENGINE v4 — fast entry, hard spike/surge block
-      // Enter quickly when market is calm. Block instantly on danger.
-      // ════════════════════════════════════════════════════════════
+      // ════════════════════════════════════════════════════════════════
+      // ENTRY ENGINE v5 — Moment-quality based, fast when calm
+      // ════════════════════════════════════════════════════════════════
+      // Philosophy: Losses come from entering at BAD MOMENTS, not bad symbols.
+      // This engine scores the CURRENT MOMENT (last 10 ticks) for entry quality.
+      // It enters FAST when the moment is safe, waits briefly when danger is present.
+      //
+      // HOW IT WORKS:
+      //  Step 1 — HARD BLOCKS: any single block = no entry this tick (try next tick)
+      //    • Live spike (current tick ≥ 2.5× median)
+      //    • RSI extreme (>72 or <28) — price stretched, likely to continue
+      //    • Stochastic extreme (>83 or <17) — price at edge of recent range
+      //    • Active surge (3 consecutive same direction AND push > 3× median)
+      //    • High volatility (last 6-tick ATR > 1.6× median)
+      //    • Symbol gate (score<35 AND longevity<20 — truly bad symbol)
+      //
+      //  Step 2 — MOMENT SCORE (0-100): how ideal is right now for entry?
+      //    • M1: Last tick size small (calm tick = 30pts)
+      //    • M2: Recent vol low (quiet vol = 25pts)
+      //    • M3: RSI near 50 neutral (balanced market = 20pts)
+      //    • M4: Stochastic near center (not at range edge = 15pts)
+      //    • M5: Mixed tick directions (oscillating = 10pts)
+      //    Total ≥ 52 → ENTER NOW
+      // ════════════════════════════════════════════════════════════════
       if(con||isBuying||aiCool) return;
       const buf=tickBuf, n=tickBuf.length;
-      if(n<10) return;
+      if(n<12) return;
 
-      // ── Shared stats ─────────────────────────────────────────
-      const allMv=[];
-      for(let i=Math.max(1,n-40);i<n;i++) allMv.push(Math.abs(buf[i].p-buf[i-1].p));
-      const sortedMv=[...allMv].sort((a,b)=>a-b);
-      const medMv = sortedMv[Math.floor(sortedMv.length/2)]||0.0001;
+      // ── Shared stats (always computed, used for UI too) ──────────
+      // Robust median ATR from last 40 ticks
+      const _mvs=[];
+      for(let i=Math.max(1,n-40);i<n;i++) _mvs.push(Math.abs(buf[i].p-buf[i-1].p));
+      const _srt=[..._mvs].sort((a,b)=>a-b);
+      const medMv=_srt[Math.floor(_srt.length/2)]||0.0001;
 
-      const rWin=Math.min(14,n-1);
-      let g=0,l=0;
+      // RSI (10-tick)
+      const rWin=Math.min(10,n-1); let g=0,l=0;
       for(let i=n-rWin;i<n;i++){const m=buf[i].p-buf[i-1].p;if(m>0)g+=m;else l+=Math.abs(m);}
       const rsi=100-100/(1+(g/rWin)/((l/rWin)||0.0001));
 
+      // Stochastic %K (15-tick)
+      const skW=buf.slice(-Math.min(15,n)).map(b=>b.p);
+      const skLo=Math.min(...skW),skHi=Math.max(...skW);
+      const stochK=skHi>skLo?(price-skLo)/(skHi-skLo)*100:50;
+
+      // Current tick size ratio
+      const lastMv=Math.abs(buf[n-1].p-buf[n-2].p);
+      const spRatio=lastMv/medMv;
+
+      // Last 6-tick ATR
+      const last6mv=_mvs.slice(-6);
+      const atr6=last6mv.reduce((a,b)=>a+b,0)/last6mv.length||0.0001;
+      const volRatio=atr6/medMv;
+
+      // Trend display
       const sh=Math.min(8,n),lg=Math.min(50,n);
       const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
       const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
@@ -2852,108 +2953,105 @@ function scheduleAlternativeGrowth(){
       const roc=((buf[n-1].p-buf[n-1-rocP].p)/buf[n-1-rocP].p)*100;
       const momUp=roc>0;
       const er=exitProbability;
-
       const tl=trendUp?'▲ BULL':'▼ BEAR';
       const lowVol=(medMv/price*100)<0.15;
       const rl=rsi.toFixed(1)+(rsi<38?' OS':rsi>62?' OB':'');
+
+      // Update indicators
       $('iTrend').textContent=tl;$('iTrend').style.color=trendUp?'var(--green)':'var(--red)';
       $('iMom').textContent=(roc>=0?'+':'')+roc.toFixed(3)+'%';$('iMom').style.color=momUp?'var(--green)':'var(--red)';
       $('iRsi').textContent=rl;$('iRsi').style.color=rsi<38?'var(--green)':rsi>62?'var(--red)':'var(--gold)';
       $('iVol').textContent=lowVol?'LOW':'MED/HI';$('iVol').style.color=lowVol?'var(--green)':'var(--red)';
       $('iExit').textContent=er+'%';$('iExit').style.color=er<30?'var(--green)':er<55?'var(--gold)':'var(--red)';
 
-      const sv=volScores[sym];
-      const symScore   = sv?sv.score:0;
-      const spikeScore = sv?sv.spikeScore:0;
-      const longevity  = sv?sv.longevity:0;
+      const sv=volScores[sym]||{};
+      const symScore=sv.score||0;
+      const longevity=sv.longevity||0;
+      const spikeScore=sv.spikeScore||50;
 
-      // ── HARD BLOCK FILTERS ───────────────────────────────────
-      // Any single filter = no entry. These are non-negotiable.
+      // ── STEP 1: HARD BLOCKS ──────────────────────────────────────
+      // Each block shows WHY we're waiting. Clears automatically next tick.
 
-      // B1: Symbol must pass quality threshold
-      if(symScore<42){
-        _setUI('WAIT','Sym:'+symScore+'<42'); return;
+      // Block: truly bad symbol (both score AND longevity low)
+      if(symScore<35 && longevity<20){
+        return _ui('WAIT','BadSym:'+symScore+'/'+longevity);
       }
-
-      // B2: Symbol must not have high spike history
-      if(spikeScore<50){
-        _setUI('WAIT','SpikeRisk:'+spikeScore); return;
+      // Block: live spike on this exact tick
+      if(spRatio>3.0){
+        return _ui('WAIT','Spike×'+spRatio.toFixed(1)+' wait');
       }
-
-      // B3: Current tick is a spike — never enter on spike tick
-      const lastMv=Math.abs(buf[n-1].p-buf[n-2].p);
-      const spRatio=lastMv/medMv;
-      if(spRatio>2.2){
-        _setUI('WAIT','LiveSpike×'+spRatio.toFixed(1)); return;
+      // Block: RSI extreme — price momentum too strong
+      if(rsi>78){
+        return _ui('WAIT','RSI OB:'+rsi.toFixed(0));
       }
-
-      // B4: Last 3 ticks all same direction AND bigger than normal
-      // = momentum surge — barrier could be hit on next entry tick
+      if(rsi<22){
+        return _ui('WAIT','RSI OS:'+rsi.toFixed(0));
+      }
+      // Block: stochastic extreme — at edge of range
+      if(stochK>88){
+        return _ui('WAIT','Stoch Hi:'+stochK.toFixed(0)+'%');
+      }
+      if(stochK<12){
+        return _ui('WAIT','Stoch Lo:'+stochK.toFixed(0)+'%');
+      }
+      // Block: active directional surge
       if(n>=5){
-        const mv3=[1,2,3].map(i=>buf[n-i].p-buf[n-i-1].p);
+        const mv3=[buf[n-1].p-buf[n-2].p, buf[n-2].p-buf[n-3].p, buf[n-3].p-buf[n-4].p];
         const allUp3=mv3.every(m=>m>0), allDn3=mv3.every(m=>m<0);
         if(allUp3||allDn3){
           const push3=Math.abs(buf[n-1].p-buf[n-4].p);
-          if(push3>medMv*3.5){
-            _setUI('WAIT','Surge3 block'); return;
+          if(push3>medMv*4.0){
+            return _ui('WAIT','Surge×'+(push3/medMv).toFixed(1));
           }
         }
       }
-
-      // B5: RSI at extremes — price is stretched, likely to continue
-      if(rsi>72||rsi<28){
-        _setUI('WAIT','RSI extreme('+rsi.toFixed(0)+')'); return;
+      // Block: elevated volatility regime
+      if(volRatio>2.0){
+        return _ui('WAIT','VolHigh×'+volRatio.toFixed(1));
       }
 
-      // B6: Recent volatility regime — last 6 ticks vs median
-      if(n>=10){
-        const last6mv=allMv.slice(-6);
-        const atr6=last6mv.reduce((a,b)=>a+b,0)/6||0.0001;
-        const regRatio=atr6/medMv;
-        if(regRatio>1.7){
-          _setUI('WAIT','VolReg×'+regRatio.toFixed(1)); return;
-        }
+      // ── STEP 2: MOMENT SCORE ────────────────────────────────────
+      // All blocks passed. Score the quality of this specific moment.
+      let ms=0;
+      // M1: Tick calmness — how small is this tick vs normal? (0-30)
+      const m1=Math.max(0, 30-spRatio*14); ms+=m1;
+      // M2: Vol regime calmness — how quiet is recent vol? (0-25)
+      const m2=volRatio<=1?25:Math.max(0,25-(volRatio-1)*28); ms+=m2;
+      // M3: RSI neutrality — closer to 50 = less momentum = safer entry (0-20)
+      const m3=Math.max(0, 20-Math.abs(rsi-50)*0.52); ms+=m3;
+      // M4: Stochastic centrality — away from range edges = more room (0-15)
+      const m4=Math.max(0, 15-Math.abs(stochK-50)*0.32); ms+=m4;
+      // M5: Mixed tick direction — oscillating market is safest to enter (0-10)
+      if(n>=4){
+        const d3=[buf[n-1].p-buf[n-2].p, buf[n-2].p-buf[n-3].p, buf[n-3].p-buf[n-4].p];
+        if(d3.some(m=>m>0)&&d3.some(m=>m<0)) ms+=10;
       }
 
-      // B7: Longevity must show empirical barrier survival
-      if(longevity<28){
-        _setUI('WAIT','Longevity:'+longevity+'<28'); return;
-      }
+      // Bonus: good symbol history adds confidence (0-8 bonus)
+      const symBonus = symScore>=55 ? 5 : symScore>=45 ? 3 : 0;
+      const longevityBonus = longevity>=50 ? 3 : longevity>=35 ? 1 : 0;
+      ms = Math.min(100, ms + symBonus + longevityBonus);
 
-      // ── ENTRY SCORE ─────────────────────────────────────────
-      // All hard blocks passed. Score entry quality.
-      let score=0;
-      score += symScore   * 0.30;   // symbol quality
-      score += spikeScore * 0.20;   // spike-free history
-      score += longevity  * 0.20;   // empirical barrier survival
-      // Current calm bonus
-      const calmness = Math.max(0, 100-(spRatio/2.2)*100);
-      score += calmness   * 0.15;
-      // RSI neutral bonus (RSI 45-55 = best)
-      const rsiNeutral = Math.max(0, 15-(Math.abs(rsi-50))*0.6);
-      score += rsiNeutral * 0.15;
-
-      // Lower threshold = enters faster. 50 = balanced speed/quality.
       const THRESHOLD=46;
-      const sig=score>=THRESHOLD?'BUY':'WAIT';
+      const sig=ms>=THRESHOLD?'BUY':'WAIT';
       const reason=sig==='BUY'
-        ?'Entry:'+Math.round(score)+' L:'+longevity+' Sp:'+spikeScore
-        :'Score:'+Math.round(score);
+        ?'ms:'+Math.round(ms)+' RSI:'+rsi.toFixed(0)+' S:'+stochK.toFixed(0)
+        :'ms:'+Math.round(ms)+'<'+THRESHOLD+' RSI:'+rsi.toFixed(0);
 
-      _setUI(sig,reason,sig==='BUY');
+      _ui(sig, reason, sig==='BUY');
 
       if(sig==='BUY'&&!con&&!aiCool&&!isBuying){
         if(!authed||!activeToken||activeToken.length<10){
-          $('sigSub').textContent='⏳ Waiting Deriv auth…';
+          $('sigSub').textContent='⏳ Auth wait…';
         } else {
-          doEntry(price,score);
+          doEntry(price, ms);
         }
       }
 
-      function _setUI(sig,reason,isBuy){
-        const cl=isBuy?'BUY':'WAIT';
+      function _ui(s,r,buy){
+        const cl=buy?'BUY':'WAIT';
         $('sigBox').className='sig-box '+cl;$('sigTxt').className='sig-txt '+cl;
-        $('sigTxt').textContent=sig;$('sigSub').textContent=reason;
+        $('sigTxt').textContent=s;$('sigSub').textContent=r;
         scanAnim=(scanAnim+8)%105;$('scanFill').style.width=Math.min(100,scanAnim)+'%';
         const wr=aiTrades>0?((aiWins/aiTrades)*100).toFixed(0)+'%':'—';
         $('stWins').textContent=aiWins;$('stLoss').textContent=aiLoss;$('stWR').textContent=wr;
@@ -2963,10 +3061,11 @@ function scheduleAlternativeGrowth(){
         $('ovTrend').textContent=tl;$('ovTrend').style.color=trendUp?'var(--green)':'var(--red)';
         $('ovRsi').textContent=rl;$('ovRsi').style.color=rsi<38?'var(--green)':rsi>62?'var(--red)':'var(--gold)';
         $('ovExitRisk').textContent=er+'%';$('ovExitRisk').style.color=er<30?'var(--green)':er<55?'var(--gold)':'var(--red)';
-        $('ovSig').textContent=sig==='BUY'?'BUY':'WAIT';$('ovSig').style.color=sig==='BUY'?'var(--green)':'var(--gold)';
+        $('ovSig').textContent=s==='BUY'?'BUY':'WAIT';$('ovSig').style.color=s==='BUY'?'var(--green)':'var(--gold)';
         $('sbAI').textContent='AI:'+aiTrades+'t';$('sbAI').style.color=aiOn?'var(--green)':'var(--sub)';
       }
     }
+
 
 // ═══════════════════════════════════════════
 // ENTRY & EXIT
