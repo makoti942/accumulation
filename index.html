@@ -942,7 +942,7 @@ const $=id=>document.getElementById(id);
 let ws=null,wsAlive=false,pingTimer=null,pingT=0,lat=0;
 let reconnDelay=800,reconnTimer=null,connTO=null,appReady=false;
 let heartbeatTimer=null,lastMsgTime=0;
-let sym='R_10',dp=3,gr=2,stake=10,tp=null;
+let sym='R_10',dp=3,gr=3,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
 let lastKnownPayout=0; // Tracks highest bid_price seen — used when final poc has bid_price=0
@@ -1939,50 +1939,88 @@ function logout(){
 function mkLine(color,title,style,width){
   return chart.addLineSeries({color,lineWidth:width||2,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
 }
-function drawBarriers(){
-  clearBarriers();
-  if(!con||!chart)return;
+function barrierDist(p){const m={1:0.01516,2:0.02326,3:0.03121,4:0.03900,5:0.04663};return p*(m[gr]||0.02326);}
+
+// ── BARRIER LINE SYSTEM ──────────────────────────────────────────
+// Lines exist at ALL TIMES (pre-trade and during trade).
+// Pre-trade : dashed grey lines tracking the proposal barriers (move with price)
+// Active    : solid green upper / solid red lower (Deriv style)
+// After KO  : both lines turn red briefly then fade back to grey preview
+function _ensureBarrierLines(){
+  if(!chart) return;
   const fmt={type:'price',precision:dp,minMove:Math.pow(10,-dp)};
-  // Upper barrier — bright green solid thick line (exactly like Deriv accumulator)
-  lineU=chart.addLineSeries({
-    color:'#00d492',lineWidth:2,
-    lineStyle:LightweightCharts.LineStyle.Solid,
-    lastValueVisible:true,priceLineVisible:false,
-    crosshairMarkerVisible:false,title:'▲ Upper',priceFormat:fmt
-  });
-  // Lower barrier — bright red solid thick line
-  lineL=chart.addLineSeries({
-    color:'#ff4d6e',lineWidth:2,
-    lineStyle:LightweightCharts.LineStyle.Solid,
-    lastValueVisible:true,priceLineVisible:false,
-    crosshairMarkerVisible:false,title:'▼ Lower',priceFormat:fmt
-  });
-  // Entry reference — thin dashed white line
-  lineE=chart.addLineSeries({
-    color:'#ffffff44',lineWidth:1,
-    lineStyle:LightweightCharts.LineStyle.Dashed,
-    lastValueVisible:false,priceLineVisible:false,
-    crosshairMarkerVisible:false,title:'Entry',priceFormat:fmt
-  });
-  // Seed data from price history so barriers appear immediately
-  const base = priceHist.length > 0 ? priceHist.slice(-100) : (prevP ? [{time:Math.floor(Date.now()/1000),value:prevP}] : []);
-  if(base.length > 0){
-    const uD=base.map(p=>({time:p.time,value:con.upper}));
-    const lD=base.map(p=>({time:p.time,value:con.lower}));
-    const eD=base.map(p=>({time:p.time,value:con.entry}));
-    try{lineU.setData(uD);}catch(e){}
-    try{lineL.setData(lD);}catch(e){}
-    try{lineE.setData(eD);}catch(e){}
+  if(!lineU){
+    lineU=chart.addLineSeries({color:'#ffffff40',lineWidth:1,
+      lineStyle:LightweightCharts.LineStyle.Dashed,
+      lastValueVisible:true,priceLineVisible:false,
+      crosshairMarkerVisible:false,title:'▲',priceFormat:fmt});
+  }
+  if(!lineL){
+    lineL=chart.addLineSeries({color:'#ffffff40',lineWidth:1,
+      lineStyle:LightweightCharts.LineStyle.Dashed,
+      lastValueVisible:true,priceLineVisible:false,
+      crosshairMarkerVisible:false,title:'▼',priceFormat:fmt});
+  }
+}
+function _setBarrierStyle(state){
+  // state: 'preview' | 'active' | 'ko'
+  if(!lineU||!lineL) return;
+  const styles={
+    preview:{cu:'#ffffff50',cl:'#ffffff50',w:1,s:LightweightCharts.LineStyle.Dashed,tu:'▲',tl:'▼'},
+    active: {cu:'#00e676',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'▲ Upper',tl:'▼ Lower'},
+    ko:     {cu:'#ff1744',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'✕ KO',   tl:'✕ KO'},
+  };
+  const st=styles[state]||styles.preview;
+  try{lineU.applyOptions({color:st.cu,lineWidth:st.w,lineStyle:st.s,title:st.tu});}catch(e){}
+  try{lineL.applyOptions({color:st.cl,lineWidth:st.w,lineStyle:st.s,title:st.tl});}catch(e){}
+}
+function drawBarriers(){
+  // Called when trade becomes active — switch to active style, seed full history
+  _ensureBarrierLines();
+  if(!con||!chart) return;
+  _setBarrierStyle('active');
+  // Entry line (thin white dashed)
+  if(!lineE){
+    const fmt={type:'price',precision:dp,minMove:Math.pow(10,-dp)};
+    lineE=chart.addLineSeries({color:'#ffffff44',lineWidth:1,
+      lineStyle:LightweightCharts.LineStyle.Dashed,
+      lastValueVisible:false,priceLineVisible:false,
+      crosshairMarkerVisible:false,title:'',priceFormat:fmt});
+  }
+  const base=priceHist.length>0?priceHist.slice(-100):(prevP?[{time:Math.floor(Date.now()/1000),value:prevP}]:[]);
+  if(base.length>0){
+    try{lineU.setData(base.map(pt=>({time:pt.time,value:con.upper})));}catch(e){}
+    try{lineL.setData(base.map(pt=>({time:pt.time,value:con.lower})));}catch(e){}
+    try{lineE.setData(base.map(pt=>({time:pt.time,value:con.entry})));}catch(e){}
   }
 }
 function appendBarrierPts(t){
-  if(!con)return;
-  try{if(lineU)lineU.update({time:t,value:con.upper});}catch(e){}
-  try{if(lineL)lineL.update({time:t,value:con.lower});}catch(e){}
-  try{if(lineE)lineE.update({time:t,value:con.entry});}catch(e){}
+  _ensureBarrierLines();
+  if(con){
+    try{if(lineU)lineU.update({time:t,value:con.upper});}catch(e){}
+    try{if(lineL)lineL.update({time:t,value:con.lower});}catch(e){}
+    try{if(lineE)lineE.update({time:t,value:con.entry});}catch(e){}
+  } else if(latestProposal&&latestProposal.barrier){
+    // No trade — track proposal barriers so lines move with price
+    try{if(lineU)lineU.update({time:t,value:latestProposal.barrier});}catch(e){}
+    try{if(lineL)lineL.update({time:t,value:latestProposal.low_barrier});}catch(e){}
+  } else if(prevP){
+    // No proposal yet — estimate from current price
+    const bd=barrierDist(prevP||0);
+    try{if(lineU)lineU.update({time:t,value:(prevP||0)+bd});}catch(e){}
+    try{if(lineL)lineL.update({time:t,value:(prevP||0)-bd});}catch(e){}
+  }
 }
-function clearBarriers(){[lineU,lineL,lineE].forEach(s=>{if(s)try{chart.removeSeries(s);}catch(e){}});lineU=lineL=lineE=null;}
-function barrierDist(p){const m={1:0.01516,2:0.02326,3:0.03121,4:0.03900,5:0.04663};return p*(m[gr]||0.02326);}
+function clearBarriers(){
+  // Don't remove the series — just reset to preview style
+  // Lines stay on chart always; only style changes
+  if(lineE){try{chart.removeSeries(lineE);}catch(e){} lineE=null;}
+  _setBarrierStyle('preview');
+}
+function flashBarriersKO(){
+  _setBarrierStyle('ko');
+  setTimeout(()=>_setBarrierStyle('preview'),3000);
+}
 
 // ═══════════════════════════════════════════
 // PATTERN ENGINE — learns from real barrier breaks
@@ -2096,9 +2134,19 @@ function analyzeHistoricalBreaks(symKey) {
   }
 
   if(!con&&prevP!==null&&!isHistory){
-    const bd=barrierDist(p);
-    $('bUpper').textContent=(p+bd).toFixed(dp);$('bLower').textContent=(p-bd).toFixed(dp);
-    $('bEntry').textContent='—';$('infoBarrier').textContent='±'+bd.toFixed(dp);
+    // Update UI labels from proposal (most accurate) or estimate
+    if(latestProposal&&latestProposal.barrier&&latestProposal.low_barrier){
+      $('bUpper').textContent=latestProposal.barrier.toFixed(dp);
+      $('bLower').textContent=latestProposal.low_barrier.toFixed(dp);
+      $('bEntry').textContent='—';
+      $('infoBarrier').textContent='±'+((latestProposal.barrier-latestProposal.low_barrier)/2).toFixed(dp);
+    } else {
+      const bd=barrierDist(p);
+      $('bUpper').textContent=(p+bd).toFixed(dp);
+      $('bLower').textContent=(p-bd).toFixed(dp);
+      $('bEntry').textContent='—';$('infoBarrier').textContent='±'+bd.toFixed(dp);
+    }
+    // Barrier lines on chart are handled by appendBarrierPts (called just above)
   }
 
   // ── ACTIVE CONTRACT ──
@@ -2127,30 +2175,23 @@ function analyzeHistoricalBreaks(symKey) {
     $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
     $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
 
-    // ════════════════════════════════════════════════════════════════════
-    // PREDICTIVE EXIT ENGINE v5
-    // ════════════════════════════════════════════════════════════════════
-    // TWO LAYERS working together:
+    // ════════════════════════════════════════════════════════════════
+    // EXIT ENGINE v6 — 4 RULES + BOLLINGER BAND. NOTHING ELSE.
+    // ════════════════════════════════════════════════════════════════
+    // SIMPLE IS MORE ACCURATE THAN COMPLEX.
+    // Every extra signal = more false positives = more early exits = losses.
     //
-    //  LAYER 1 — PREDICTORS (forward-looking, fire BEFORE the barrier breaks)
-    //    P1. Linear Regression Projection   — projects price 3 ticks forward
-    //    P2. Weighted Velocity TTB           — ticks-to-barrier at current speed
-    //    P3. Stochastic %K extreme           — price overbought in recent range
-    //    P4. EMA MACD momentum               — fast EMA crossing slow EMA toward barrier
-    //    P5. Parabolic SAR direction         — trend direction aligned with barrier
-    //    P6. Hurst exponent (20-tick)        — is movement trending or mean-reverting?
-    //    P7. Bollinger Bands (3 signals)      — band touch, %B extreme, squeeze breakout
+    // LEVEL 1 — fires immediately (tick ≥ 2):
+    //   E1. Spike: last tick ≥ 3× median AND toward barrier
+    //   E2. Double-spike: 2 consecutive big ticks toward barrier
+    //   E3. Critical zone: safety < 15%
     //
-    //  LAYER 2 — REACTIVE RULES (fire NOW on confirmed danger)
-    //    R1. Spike detection                 — last tick ≥2.5× median
-    //    R2. Double spike                    — 2 consecutive large ticks
-    //    R3. Proximity + direction streak    — close AND pushing toward barrier
-    //    R4. Sustained 4-tick run            — 4 consecutive toward barrier
-    //    R5. Elevated velocity streak        — fast ticks toward barrier
-    //    R6. Critical zone                   — within 12% of barrier gap
-    //    R7. RSI extreme + proximity         — RSI>78 AND within 35%
-    //    R8. Volatility burst + direction    — vol regime 2×+ AND toward barrier
-    // ════════════════════════════════════════════════════════════════════
+    // LEVEL 2 — fires after minHold ticks (payout has built up):
+    //   E4. Proximity push: safety < 35% AND 2+ ticks toward barrier
+    //   E5. Sustained run: 4+ consecutive ticks toward barrier
+    //   E6. Bollinger Band: price above upper BB toward upper barrier
+    //   E7. Fast spike-run: 3 consecutive ticks each ≥ 2× median toward barrier
+    // ════════════════════════════════════════════════════════════════
 
     const n = tickBuf.length;
     const canExit = con.ticks >= 2;
@@ -2168,295 +2209,148 @@ function analyzeHistoricalBreaks(symKey) {
       return;
     }
 
-    // ── SHARED STATS ─────────────────────────────────────────────
+    // ── Shared calculations ───────────────────────────────────────
     const toBarDir = nearBar===con.upper;
 
-    // Robust median ATR — immune to spike inflation of mean
+    // Median ATR — robust baseline immune to spike inflation
     const _allMv=[];
     for(let i=1;i<n;i++) _allMv.push(Math.abs(tickBuf[i].p-tickBuf[i-1].p));
-    const _sortMv=[..._allMv].sort((a,b)=>a-b);
-    const medATR = _sortMv[Math.floor(_sortMv.length/2)] || 0.0001;
+    const _srtMv=[..._allMv].sort((a,b)=>a-b);
+    const medATR = _srtMv[Math.floor(_srtMv.length/2)]||0.0001;
 
-    // Short regime ATR (last 8 ticks)
-    const _r8 = _allMv.slice(-8);
-    const atrNow = _r8.reduce((a,b)=>a+b,0)/_r8.length || 0.0001;
-    const volRegime = atrNow/medATR;
+    // Last tick info
+    const lastMv   = Math.abs(tickBuf[n-1].p-tickBuf[n-2].p);
+    const spRatio  = lastMv/medATR;
+    const lastDir  = tickBuf[n-1].p-tickBuf[n-2].p;
+    const lastToBar= toBarDir?lastDir>0:lastDir<0;
 
-    // ─────────────────────────────────────────────────────────────
-    // ════ LAYER 1 — PREDICTORS ════════════════════════════════
-    // ─────────────────────────────────────────────────────────────
-
-    let predReason = '';
-
-    // ── P1: LINEAR REGRESSION PROJECTION ──────────────────────────
-    // Fit linear regression to last 10 ticks.
-    // Project price 3 and 5 ticks forward.
-    // If projected price is within 15% of barrier → exit NOW.
-    // This predicts where price WILL BE, not where it is.
-    {
-      const WIN=Math.min(10,n);
-      const pts=tickBuf.slice(-WIN).map(b=>b.p);
-      const xm=(WIN-1)/2;
-      const ym=pts.reduce((a,b)=>a+b,0)/WIN;
-      let num=0,den=0;
-      for(let i=0;i<WIN;i++){num+=(i-xm)*(pts[i]-ym);den+=(i-xm)*(i-xm);}
-      const slope=den>0?num/den:0;
-      // Project 3 and 5 ticks forward from current last tick
-      const proj3 = p + slope*3;
-      const proj5 = p + slope*5;
-      // Safety% if projected price is reached
-      const safe3 = (Math.min(con.upper-proj3, proj3-con.lower)/half)*100;
-      const safe5 = (Math.min(con.upper-proj5, proj5-con.lower)/half)*100;
-      if(!predReason && safe3 < 18){
-        predReason='LRP3:'+safe3.toFixed(0)+'%safe';
-      } else if(!predReason && safe5 < 10){
-        predReason='LRP5:'+safe5.toFixed(0)+'%safe';
-      }
-      // Also exit if slope is strongly toward barrier and we're already within 45%
-      const slopeToBar = toBarDir ? slope>0 : slope<0;
-      const slopeStrong = Math.abs(slope) > medATR*1.2;
-      if(!predReason && slopeToBar && slopeStrong && safetyPct<45){
-        predReason='LRP:slope×'+(Math.abs(slope)/medATR).toFixed(1)+'<45%';
-      }
-    }
-
-    // ── P2: WEIGHTED VELOCITY → TICKS-TO-BARRIER (TTB) ────────────
-    // Exponentially weighted recent velocity (newest ticks matter most).
-    // TTB = remaining barrier distance / velocity toward barrier.
-    // If TTB < 5 ticks → exit immediately (it will hit on next few ticks).
-    if(!predReason){
-      const WV=Math.min(8,n-1);
-      let velSum=0,wSum=0;
-      for(let i=0;i<WV;i++){
-        const idx=n-1-i;
-        const mv=tickBuf[idx].p-tickBuf[idx-1].p;
-        const w=WV-i; // weight: newest=WV, oldest=1
-        velSum+=mv*w; wSum+=w;
-      }
-      const wVel=wSum>0?velSum/wSum:0;
-      // Velocity component toward barrier
-      const velToBar = toBarDir ? wVel : -wVel;
-      if(velToBar>0){
-        const ttb = nearDist/velToBar;
-        if(ttb < 5){ predReason='TTB:'+ttb.toFixed(1)+'tks'; }
-        else if(ttb < 9 && safetyPct < 40){ predReason='TTB:'+ttb.toFixed(1)+'tks<40%'; }
-      }
-    }
-
-    // ── P3: STOCHASTIC %K EXTREME ──────────────────────────────────
-    // %K = how high is current price within the last 14-tick range.
-    // >82 toward upper barrier = price at the top of its recent range,
-    // likely to push through the barrier.
-    // <18 toward lower barrier = same logic reversed.
-    if(!predReason && n>=14){
-      const SKW=Math.min(14,n);
-      const skPrices=tickBuf.slice(-SKW).map(b=>b.p);
-      const skLo=Math.min(...skPrices), skHi=Math.max(...skPrices);
-      const stochK = skHi>skLo ? (p-skLo)/(skHi-skLo)*100 : 50;
-      const stochDanger=(toBarDir && stochK>82) || (!toBarDir && stochK<18);
-      if(stochDanger && safetyPct<50){
-        predReason='Stoch:'+(toBarDir?stochK.toFixed(0):(100-stochK).toFixed(0))+'%<50%safe';
-      }
-    }
-
-    // ── P4: EMA MACD MOMENTUM CROSSOVER ───────────────────────────
-    // EMA(4) crosses above EMA(10) = bullish momentum.
-    // If bullish AND near upper barrier, momentum is pushing toward KO.
-    // If bearish AND near lower barrier, same.
-    // This catches EARLY momentum build — before it's obvious.
-    if(!predReason && n>=12){
-      const allPrices=tickBuf.slice(-12).map(b=>b.p);
-      // EMA calculation: k=2/(period+1)
-      const calcEMA=(pts,per)=>{let e=pts[0];const k=2/(per+1);for(let i=1;i<pts.length;i++)e=pts[i]*k+e*(1-k);return e;};
-      const ema4=calcEMA(allPrices,4);
-      const ema10=calcEMA(allPrices,10);
-      const macd=ema4-ema10;
-      const macdToBar=(toBarDir&&macd>0)||(!toBarDir&&macd<0);
-      // Also check MACD strength relative to ATR
-      const macdStrength=Math.abs(macd)/medATR;
-      if(macdToBar && macdStrength>0.6 && safetyPct<45){
-        predReason='MACD×'+macdStrength.toFixed(1)+'<45%';
-      }
-    }
-
-    // ── P5: PARABOLIC SAR DIRECTION ────────────────────────────────
-    // SAR flipping toward barrier = trend just confirmed in barrier direction.
-    // Use simplified SAR: if price hi's are rising AND near upper barrier → SAR bullish.
-    // More precisely: measure if the last 5 ticks make higher highs (SAR bullish).
-    if(!predReason && n>=8){
-      const sar5=tickBuf.slice(-5).map(b=>b.p);
-      // Bullish SAR: each high exceeds previous (ascending peaks)
-      let sarBull=true, sarBear=true;
-      for(let i=1;i<sar5.length;i++){
-        if(sar5[i]<=sar5[i-1]) sarBull=false;
-        if(sar5[i]>=sar5[i-1]) sarBear=false;
-      }
-      const sarDanger=(toBarDir&&sarBull)||((!toBarDir)&&sarBear);
-      if(sarDanger && safetyPct<40){
-        predReason='SAR→barrier<40%';
-      }
-    }
-
-    // ── P6: HURST EXPONENT (TRENDING DETECTION) ───────────────────
-    // Hurst exponent > 0.6 on last 20 ticks = price is TRENDING.
-    // Trending price toward barrier = will continue to barrier.
-    // H < 0.4 = mean-reverting = safer to hold.
-    // Computed via simplified R/S analysis on tick returns.
-    if(!predReason && n>=20){
-      const hPrices=tickBuf.slice(-20).map(b=>b.p);
-      const hRets=[];
-      for(let i=1;i<hPrices.length;i++) hRets.push(hPrices[i]-hPrices[i-1]);
-      const hMean=hRets.reduce((a,b)=>a+b,0)/hRets.length;
-      // Cumulative deviation from mean
-      let cumDev=0, maxD=-Infinity, minD=Infinity;
-      for(const r of hRets){ cumDev+=r-hMean; maxD=Math.max(maxD,cumDev); minD=Math.min(minD,cumDev); }
-      const R=maxD-minD;
-      const S=Math.sqrt(hRets.reduce((a,b)=>a+Math.pow(b-hMean,2),0)/hRets.length)||0.0001;
-      const hurst = R>0&&S>0 ? Math.log(R/S)/Math.log(hRets.length) : 0.5;
-      // Is trend toward barrier?
-      const vel5=tickBuf[n-1].p-tickBuf[n-5].p;
-      const trendToBar=(toBarDir&&vel5>0)||(!toBarDir&&vel5<0);
-      if(hurst>0.62 && trendToBar && safetyPct<50){
-        predReason='Hurst:'+hurst.toFixed(2)+'trend<50%';
-      }
-    }
-
-    // ── P7: BOLLINGER BANDS — THREE EXIT SIGNALS ──────────────────
-    // Bollinger Bands = SMA(20) ± 2×StdDev(20).
-    // The bands define where price is statistically "normal".
-    // When price steps outside the bands toward the barrier, it is in
-    // statistically extreme territory and likely to continue — exit now.
-    //
-    // THREE BB SIGNALS (any one fires):
-    //  BB-1: Price ≥ upper band AND toward upper barrier
-    //        OR price ≤ lower band AND toward lower barrier
-    //        → "walking the band" = strong trend in barrier direction
-    //
-    //  BB-2: %B extreme — %B = (price−lowerBB)/(upperBB−lowerBB)
-    //        %B > 0.92 AND toward upper barrier → extreme position
-    //        %B < 0.08 AND toward lower barrier → extreme position
-    //
-    //  BB-3: Squeeze breakout — bands were tight (coiling), now
-    //        price breaks hard in barrier direction = energy release
-    if(!predReason && n>=20){
-      // Compute SMA(20) and StdDev(20)
-      const bbPrices=tickBuf.slice(-20).map(b=>b.p);
-      const bbSMA=bbPrices.reduce((a,b)=>a+b,0)/20;
-      const bbVar=bbPrices.reduce((a,b)=>a+Math.pow(b-bbSMA,2),0)/20;
-      const bbStd=Math.sqrt(bbVar)||0.0001;
-      const bbUpper=bbSMA+2*bbStd;
-      const bbLower=bbSMA-2*bbStd;
-      const bbWidth=(bbUpper-bbLower)/bbSMA*100; // bandwidth %
-      const bbPct=(p-bbLower)/(bbUpper-bbLower); // %B: 0=lower,1=upper,>1=above upper
-
-      // BB-1: Price outside band toward barrier
-      const aboveUpper = p>=bbUpper;
-      const belowLower = p<=bbLower;
-      if(!predReason){
-        if(aboveUpper && toBarDir){
-          predReason='BB:AboveUpper(%B='+bbPct.toFixed(2)+')';
-        } else if(belowLower && !toBarDir){
-          predReason='BB:BelowLower(%B='+bbPct.toFixed(2)+')';
-        }
-      }
-
-      // BB-2: %B extreme (within band but very near edge)
-      if(!predReason){
-        if(bbPct>0.92 && toBarDir && safetyPct<60){
-          predReason='BB:%B='+bbPct.toFixed(2)+'→upper';
-        } else if(bbPct<0.08 && !toBarDir && safetyPct<60){
-          predReason='BB:%B='+bbPct.toFixed(2)+'→lower';
-        }
-      }
-
-      // BB-3: Squeeze breakout — compare current width to 40-tick average width
-      if(!predReason && n>=40){
-        const bbOld=tickBuf.slice(-40,-20).map(b=>b.p);
-        const bbOldSMA=bbOld.reduce((a,b)=>a+b,0)/20;
-        const bbOldStd=Math.sqrt(bbOld.reduce((a,b)=>a+Math.pow(b-bbOldSMA,2),0)/20)||0.0001;
-        const bbOldWidth=(bbOldSMA+2*bbOldStd-(bbOldSMA-2*bbOldStd))/bbOldSMA*100;
-        // Squeeze: previous width was tight, current width is expanding
-        const wasSqueezed = bbOldWidth < bbWidth*0.7; // old bands tighter than current
-        const breakingOut = Math.abs(p-bbSMA) > bbStd*1.6; // current price far from SMA
-        const breakToBar = (toBarDir&&p>bbSMA)||(!toBarDir&&p<bbSMA);
-        if(wasSqueezed && breakingOut && breakToBar && safetyPct<65){
-          predReason='BB:SqzBrk(w='+bbWidth.toFixed(2)+'%)';
-        }
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // ════ LAYER 2 — REACTIVE RULES ════════════════════════════
-    // ─────────────────────────────────────────────────────────────
-
-    let ruleReason = '';
-
-    // Consecutive tick streak toward barrier
+    // Consecutive streak toward barrier (up to 6)
     let streak=0;
     for(let i=n-1;i>=Math.max(1,n-7);i--){
       const mv=tickBuf[i].p-tickBuf[i-1].p;
       if(toBarDir?mv>0:mv<0) streak++; else break;
     }
-    const lastMv   = Math.abs(tickBuf[n-1].p-tickBuf[n-2].p);
-    const spRatio  = lastMv/medATR;
-    const lastDir  = tickBuf[n-1].p-tickBuf[n-2].p;
-    const lastToBar= toBarDir?lastDir>0:lastDir<0;
-    let streakVelSum=0;
-    for(let i=0;i<streak&&i<n-1;i++){
-      streakVelSum+=Math.abs(tickBuf[n-1-i].p-tickBuf[n-2-i].p);
-    }
-    const avgVelRatio=streak>0?(streakVelSum/streak)/medATR:0;
 
-    // R1: Spike — single tick ≥2.5× median toward barrier
-    if(!ruleReason && lastToBar && spRatio>=2.5){
-      ruleReason='SPIKE×'+spRatio.toFixed(1);
-    }
-    // R2: Double spike — two consecutive 2×+ ticks toward barrier
-    if(!ruleReason && n>=3 && streak>=2){
-      const prev2Mv=Math.abs(tickBuf[n-2].p-tickBuf[n-3].p);
-      if(spRatio>=2.0 && prev2Mv>=medATR*2.0){
-        ruleReason='DblSpike';
+    // Min hold: wait for payout to build before soft exits
+    // gr=2%→6ticks, gr=3%→4ticks, gr=4%→3ticks, gr=5%→3ticks
+    const _gr = typeof gr!=='undefined' ? gr : 2;
+    const minHold = _gr>=4?3 : _gr>=3?4 : 6;
+    const canExitSoft = con.ticks >= minHold;
+
+    // Short-term regime volatility
+    const _r6=_allMv.slice(-6);
+    const atrNow=_r6.reduce((a,b)=>a+b,0)/6||0.0001;
+    const volRegime=atrNow/medATR;
+
+    // Bollinger Band (20-tick)
+    let bbFired='';
+    if(n>=20){
+      const bbP=tickBuf.slice(-20).map(b=>b.p);
+      const bbSMA=bbP.reduce((a,b)=>a+b,0)/20;
+      const bbStd=Math.sqrt(bbP.reduce((a,b)=>a+Math.pow(b-bbSMA,2),0)/20)||0.0001;
+      const bbUpper=bbSMA+2*bbStd;
+      const bbLower=bbSMA-2*bbStd;
+      // Price outside bands toward barrier
+      if(p>=bbUpper && toBarDir)  bbFired='BB:above(+'+((p-bbUpper)/medATR).toFixed(1)+'σ)';
+      if(p<=bbLower && !toBarDir) bbFired='BB:below('+((bbLower-p)/medATR).toFixed(1)+'σ)';
+      // Price within top 5% of band toward barrier (near breakout)
+      if(!bbFired){
+        const bbPct=(p-bbLower)/(bbUpper-bbLower);
+        if(bbPct>0.95 && toBarDir && safetyPct<40)  bbFired='BB:%B='+bbPct.toFixed(2);
+        if(bbPct<0.05 && !toBarDir && safetyPct<40) bbFired='BB:%B='+bbPct.toFixed(2);
       }
     }
-    // R3: Proximity + direction — within 40% AND 2+ consecutive toward barrier
-    if(!ruleReason && safetyPct<40 && streak>=2){
-      ruleReason='Close'+safetyPct.toFixed(0)+'%+Str×'+streak;
+
+    // ── EXIT DECISIONS ────────────────────────────────────────────
+    // All exits require CONFIRMED signals — no plain streaks, only sized moves.
+    let exitReason='';
+
+    // ══ LEVEL 1: Immediate exit (tick>=2) ═══════════════════════
+
+    // E1: Spike toward barrier ≥3.5× median (false positive: ~0.5%)
+    if(!exitReason && lastToBar && spRatio>=3.5){
+      exitReason='⚡Spike×'+spRatio.toFixed(1);
     }
-    // R4: Sustained 4-tick run — any size, 4 in a row
-    if(!ruleReason && streak>=4){
-      ruleReason='Run×'+streak;
-    }
-    // R5: Elevated velocity streak — 3 consecutive, avg ≥1.5× median
-    if(!ruleReason && streak>=3 && avgVelRatio>=1.5){
-      ruleReason='FastStr×'+streak+'('+avgVelRatio.toFixed(1)+'v)';
-    }
-    // R6: Critical zone — within 12% regardless
-    if(!ruleReason && safetyPct<12){
-      ruleReason='CRIT<12%';
-    }
-    // R7: RSI extreme + proximity
-    if(!ruleReason && n>=10 && safetyPct<35){
-      const rw=Math.min(10,n-1); let g=0,l=0;
-      for(let i=n-rw;i<n;i++){const mv=tickBuf[i].p-tickBuf[i-1].p;if(mv>0)g+=mv;else l+=Math.abs(mv);}
-      const rsi=100-100/(1+(g/rw)/((l/rw)||0.0001));
-      if((toBarDir&&rsi>78)||(!toBarDir&&rsi<22)){
-        ruleReason='RSI'+(toBarDir?Math.round(rsi):100-Math.round(rsi))+'<35%';
+
+    // E2: Two consecutive big spikes toward barrier (both ≥2.5×)
+    if(!exitReason && n>=3 && lastToBar && spRatio>=2.5){
+      const p2mv=Math.abs(tickBuf[n-2].p-tickBuf[n-3].p);
+      const p2dir=tickBuf[n-2].p-tickBuf[n-3].p;
+      if(p2mv>=medATR*2.5 && (toBarDir?p2dir>0:p2dir<0)){
+        exitReason='⚡DblSpike×'+spRatio.toFixed(1);
       }
     }
-    // R8: High volatility burst + moving toward barrier
-    if(!ruleReason && volRegime>=2.0 && lastToBar && safetyPct<60){
-      ruleReason='VolBurst×'+volRegime.toFixed(1);
+
+    // E3: Critical zone — within 16% of barrier (one normal tick = KO)
+    if(!exitReason && safetyPct<16){
+      exitReason='⚡CRIT'+safetyPct.toFixed(0)+'%';
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // DECISION
-    // ─────────────────────────────────────────────────────────────
-    const exitReason = predReason || ruleReason;
-    const shouldExit = !!exitReason;
-    const exitLabel  = predReason ? '🔮'+exitReason : '⚡'+exitReason;
+    // E4: ATR explosion — last 3 ticks avg ≥3× median AND toward barrier
+    // Detects sudden vol spike that will carry through barrier
+    if(!exitReason && n>=4){
+      const last3mv=[1,2,3].map(i=>Math.abs(tickBuf[n-i].p-tickBuf[n-i-1].p));
+      const last3dir=[1,2,3].map(i=>tickBuf[n-i].p-tickBuf[n-i-1].p);
+      const atr3=last3mv.reduce((a,b)=>a+b,0)/3;
+      const allToBar=last3dir.every(m=>toBarDir?m>0:m<0);
+      if(atr3>=medATR*3.0 && allToBar){
+        exitReason='⚡ATRblast×'+(atr3/medATR).toFixed(1);
+      }
+    }
 
-    if(shouldExit){
-      sniperExit(p, bp, exitLabel);
+    // ══ LEVEL 2: Exit after minHold (payout built) ══════════════
+
+    // E5: Power run — 3+ consecutive ticks ALL ≥1.5× median toward barrier
+    // False positive on pure noise: ~1.4% vs plain streak which is 64%
+    if(!exitReason && canExitSoft){
+      let pw=0;
+      for(let i=n-1;i>=Math.max(1,n-5);i--){
+        const mv=tickBuf[i].p-tickBuf[i-1].p;
+        if((toBarDir?mv>0:mv<0) && Math.abs(mv)>=medATR*1.5) pw++; else break;
+      }
+      if(pw>=3) exitReason='🔮PowerRun×'+pw;
+    }
+
+    // E6: Proximity + above-normal push — safety<28% AND 2 of last 3 ticks big+toward
+    if(!exitReason && canExitSoft && safetyPct<28){
+      let bigPush=0;
+      for(let i=n-1;i>=Math.max(1,n-3);i--){
+        const mv=tickBuf[i].p-tickBuf[i-1].p;
+        if((toBarDir?mv>0:mv<0) && Math.abs(mv)>=medATR*1.2) bigPush++;
+      }
+      if(bigPush>=2) exitReason='🔮Near'+safetyPct.toFixed(0)+'%+Push';
+    }
+
+    // E7: Bollinger Band breach toward barrier
+    if(!exitReason && canExitSoft && bbFired &&
+       (bbFired.startsWith('BB:above')||bbFired.startsWith('BB:below'))){
+      exitReason='🔮'+bbFired;
+    }
+
+    // E8: Acceleration — each successive toward-barrier tick is BIGGER than the last
+    // Means momentum is BUILDING, not fading — will continue to barrier
+    if(!exitReason && canExitSoft && n>=5){
+      const acMvs=[];
+      for(let i=n-1;i>=n-4;i--){
+        const mv=tickBuf[i].p-tickBuf[i-1].p;
+        if(toBarDir?mv>0:mv<0) acMvs.unshift(Math.abs(mv)); else break;
+      }
+      // 3+ ticks, each bigger than previous (accelerating toward barrier)
+      if(acMvs.length>=3){
+        const isAccel=acMvs.every((v,i,a)=>i===0||v>a[i-1]*0.85);
+        if(isAccel && acMvs[acMvs.length-1]>=medATR*1.3){
+          exitReason='🔮Accel×'+acMvs.length;
+        }
+      }
+    }
+
+    // E9: Safety zone warning — within 24%, any toward-barrier pressure
+    if(!exitReason && canExitSoft && safetyPct<24){
+      exitReason='🔮Zone'+safetyPct.toFixed(0)+'%';
+    }
+
+    if(exitReason){
+      sniperExit(p, bp, exitReason);
       prevP=p; addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
@@ -2890,62 +2784,50 @@ function scheduleAlternativeGrowth(){
     // AI ENGINE — fast hunting, smart entry
     // ═══════════════════════════════════════════
     function runAI(price){
-      // ════════════════════════════════════════════════════════════════
-      // ENTRY ENGINE v5 — Moment-quality based, fast when calm
-      // ════════════════════════════════════════════════════════════════
-      // Philosophy: Losses come from entering at BAD MOMENTS, not bad symbols.
-      // This engine scores the CURRENT MOMENT (last 10 ticks) for entry quality.
-      // It enters FAST when the moment is safe, waits briefly when danger is present.
+      // ═══════════════════════════════════════════════════════════════
+      // ENTRY ENGINE v7 — 6-SIGNAL COMPOSITE SCORE + 3 HARD BLOCKS
+      // ═══════════════════════════════════════════════════════════════
+      // Score 0-100. Enter when score ≥ 60 AND no hard block active.
+      // Each signal is independent — no single signal causes entry alone.
       //
-      // HOW IT WORKS:
-      //  Step 1 — HARD BLOCKS: any single block = no entry this tick (try next tick)
-      //    • Live spike (current tick ≥ 2.5× median)
-      //    • RSI extreme (>72 or <28) — price stretched, likely to continue
-      //    • Stochastic extreme (>83 or <17) — price at edge of recent range
-      //    • Active surge (3 consecutive same direction AND push > 3× median)
-      //    • High volatility (last 6-tick ATR > 1.6× median)
-      //    • Symbol gate (score<35 AND longevity<20 — truly bad symbol)
+      // S1. Volatility calm     (0-25) — low recent ATR vs baseline
+      // S2. Mean reversion      (0-20) — price near centre after a move
+      // S3. Tick rhythm         (0-20) — alternating directions (oscillation)
+      // S4. Momentum neutral    (0-15) — RSI near 50, no strong push
+      // S5. Clean tick history  (0-10) — no spike in last 5 ticks
+      // S6. Bollinger mid-zone  (0-10) — price in middle 60% of BB range
       //
-      //  Step 2 — MOMENT SCORE (0-100): how ideal is right now for entry?
-      //    • M1: Last tick size small (calm tick = 30pts)
-      //    • M2: Recent vol low (quiet vol = 25pts)
-      //    • M3: RSI near 50 neutral (balanced market = 20pts)
-      //    • M4: Stochastic near center (not at range edge = 15pts)
-      //    • M5: Mixed tick directions (oscillating = 10pts)
-      //    Total ≥ 52 → ENTER NOW
-      // ════════════════════════════════════════════════════════════════
+      // Hard blocks (override everything, clear in 1-3 ticks):
+      // B1. Current tick ≥ 3.5× median (spike)
+      // B2. 3 consecutive same-direction ticks ALL ≥ 2.5× median (power surge)
+      // B3. Vol regime ≥ 2.5× baseline (chaotic market)
+      // ═══════════════════════════════════════════════════════════════
       if(con||isBuying||aiCool) return;
-      const buf=tickBuf, n=tickBuf.length;
-      if(n<12) return;
+      const buf=tickBuf, n=buf.length;
+      if(n<15) return;
 
-      // ── Shared stats (always computed, used for UI too) ──────────
-      // Robust median ATR from last 40 ticks
+      // ── Baseline stats ──────────────────────────────────────────
       const _mvs=[];
-      for(let i=Math.max(1,n-40);i<n;i++) _mvs.push(Math.abs(buf[i].p-buf[i-1].p));
+      for(let i=Math.max(1,n-50);i<n;i++) _mvs.push(Math.abs(buf[i].p-buf[i-1].p));
       const _srt=[..._mvs].sort((a,b)=>a-b);
       const medMv=_srt[Math.floor(_srt.length/2)]||0.0001;
+      const baseMv=_srt[Math.floor(_srt.length*0.65)]||medMv; // 65th percentile = normal upper bound
 
-      // RSI (10-tick)
-      const rWin=Math.min(10,n-1); let g=0,l=0;
-      for(let i=n-rWin;i<n;i++){const m=buf[i].p-buf[i-1].p;if(m>0)g+=m;else l+=Math.abs(m);}
-      const rsi=100-100/(1+(g/rWin)/((l/rWin)||0.0001));
-
-      // Stochastic %K (15-tick)
-      const skW=buf.slice(-Math.min(15,n)).map(b=>b.p);
-      const skLo=Math.min(...skW),skHi=Math.max(...skW);
-      const stochK=skHi>skLo?(price-skLo)/(skHi-skLo)*100:50;
-
-      // Current tick size ratio
       const lastMv=Math.abs(buf[n-1].p-buf[n-2].p);
       const spRatio=lastMv/medMv;
 
-      // Last 6-tick ATR
-      const last6mv=_mvs.slice(-6);
-      const atr6=last6mv.reduce((a,b)=>a+b,0)/last6mv.length||0.0001;
-      const volRatio=atr6/medMv;
+      // Vol regime: last 8 vs last 30
+      const atr8 =_mvs.slice(-8).reduce((a,b)=>a+b,0)/8||0.0001;
+      const atr30=_mvs.slice(-30).reduce((a,b)=>a+b,0)/30||0.0001;
+      const volRatio=atr8/atr30;
 
-      // Trend display
-      const sh=Math.min(8,n),lg=Math.min(50,n);
+      // RSI (14-tick)
+      const rWin=Math.min(14,n-1); let g=0,l=0;
+      for(let i=n-rWin;i<n;i++){const m=buf[i].p-buf[i-1].p;if(m>0)g+=m;else l+=Math.abs(m);}
+      const rsi=100-100/(1+(g/rWin)/((l/rWin)||0.0001));
+
+      // Trend/momentum for UI only
+      const sh=Math.min(8,n),lg=Math.min(40,n);
       const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
       const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
       const trendUp=shAvg>lgAvg;
@@ -2954,97 +2836,94 @@ function scheduleAlternativeGrowth(){
       const momUp=roc>0;
       const er=exitProbability;
       const tl=trendUp?'▲ BULL':'▼ BEAR';
-      const lowVol=(medMv/price*100)<0.15;
+      const lowVol=volRatio<0.9;
       const rl=rsi.toFixed(1)+(rsi<38?' OS':rsi>62?' OB':'');
 
-      // Update indicators
       $('iTrend').textContent=tl;$('iTrend').style.color=trendUp?'var(--green)':'var(--red)';
       $('iMom').textContent=(roc>=0?'+':'')+roc.toFixed(3)+'%';$('iMom').style.color=momUp?'var(--green)':'var(--red)';
       $('iRsi').textContent=rl;$('iRsi').style.color=rsi<38?'var(--green)':rsi>62?'var(--red)':'var(--gold)';
       $('iVol').textContent=lowVol?'LOW':'MED/HI';$('iVol').style.color=lowVol?'var(--green)':'var(--red)';
       $('iExit').textContent=er+'%';$('iExit').style.color=er<30?'var(--green)':er<55?'var(--gold)':'var(--red)';
 
-      const sv=volScores[sym]||{};
-      const symScore=sv.score||0;
-      const longevity=sv.longevity||0;
-      const spikeScore=sv.spikeScore||50;
-
-      // ── STEP 1: HARD BLOCKS ──────────────────────────────────────
-      // Each block shows WHY we're waiting. Clears automatically next tick.
-
-      // Block: truly bad symbol (both score AND longevity low)
-      if(symScore<35 && longevity<20){
-        return _ui('WAIT','BadSym:'+symScore+'/'+longevity);
-      }
-      // Block: live spike on this exact tick
-      if(spRatio>3.0){
-        return _ui('WAIT','Spike×'+spRatio.toFixed(1)+' wait');
-      }
-      // Block: RSI extreme — price momentum too strong
-      if(rsi>78){
-        return _ui('WAIT','RSI OB:'+rsi.toFixed(0));
-      }
-      if(rsi<22){
-        return _ui('WAIT','RSI OS:'+rsi.toFixed(0));
-      }
-      // Block: stochastic extreme — at edge of range
-      if(stochK>88){
-        return _ui('WAIT','Stoch Hi:'+stochK.toFixed(0)+'%');
-      }
-      if(stochK<12){
-        return _ui('WAIT','Stoch Lo:'+stochK.toFixed(0)+'%');
-      }
-      // Block: active directional surge
+      // ── HARD BLOCKS ──────────────────────────────────────────────
+      if(spRatio>=3.5) return _ui('WAIT','B1:Spike×'+spRatio.toFixed(1));
       if(n>=5){
-        const mv3=[buf[n-1].p-buf[n-2].p, buf[n-2].p-buf[n-3].p, buf[n-3].p-buf[n-4].p];
-        const allUp3=mv3.every(m=>m>0), allDn3=mv3.every(m=>m<0);
-        if(allUp3||allDn3){
-          const push3=Math.abs(buf[n-1].p-buf[n-4].p);
-          if(push3>medMv*4.0){
-            return _ui('WAIT','Surge×'+(push3/medMv).toFixed(1));
-          }
+        const d3=[buf[n-1].p-buf[n-2].p,buf[n-2].p-buf[n-3].p,buf[n-3].p-buf[n-4].p];
+        const sameDir=d3.every(m=>m>0)||d3.every(m=>m<0);
+        const allBig=d3.every(m=>Math.abs(m)>=medMv*2.5);
+        if(sameDir&&allBig) return _ui('WAIT','B2:PowerSurge');
+      }
+      if(volRatio>=2.5) return _ui('WAIT','B3:Vol×'+volRatio.toFixed(1));
+
+      // ── SIGNAL SCORING ───────────────────────────────────────────
+      let score=0;
+
+      // S1: Volatility calm (0-25)
+      // atr8/atr30 < 1.0 = quiet. > 1.5 = elevated. > 2.0 = bad.
+      const s1=volRatio<=0.8?25:volRatio<=1.0?22:volRatio<=1.2?17:volRatio<=1.5?10:volRatio<=1.8?4:0;
+      score+=s1;
+
+      // S2: Mean reversion — did price bounce toward centre from an extreme? (0-20)
+      // Measure: last 3-tick net displacement vs prior 10-tick displacement
+      let s2=0;
+      if(n>=14){
+        const p3=buf[n-1].p-buf[n-4].p;   // last 3 ticks net
+        const p10=buf[n-4].p-buf[n-14].p;  // prior 10 ticks net
+        // Opposite direction = reversion
+        if((p3>0&&p10<0)||(p3<0&&p10>0)){
+          // How strong is the reversion relative to the move?
+          const revStr=Math.min(1,Math.abs(p3)/(Math.abs(p10)||0.0001));
+          s2=Math.round(revStr*20);
         }
       }
-      // Block: elevated volatility regime
-      if(volRatio>2.0){
-        return _ui('WAIT','VolHigh×'+volRatio.toFixed(1));
+      score+=s2;
+
+      // S3: Tick rhythm — count direction alternations in last 8 ticks (0-20)
+      // 8 alternating ticks = 7 changes = score 20. 0 changes = 0.
+      let s3=0;
+      if(n>=9){
+        let changes=0;
+        for(let i=n-7;i<n;i++){
+          const prev=buf[i-1].p-buf[i-2].p, cur=buf[i].p-buf[i-1].p;
+          if((prev>0&&cur<0)||(prev<0&&cur>0)) changes++;
+        }
+        s3=Math.round((changes/6)*20);
       }
+      score+=s3;
 
-      // ── STEP 2: MOMENT SCORE ────────────────────────────────────
-      // All blocks passed. Score the quality of this specific moment.
-      let ms=0;
-      // M1: Tick calmness — how small is this tick vs normal? (0-30)
-      const m1=Math.max(0, 30-spRatio*14); ms+=m1;
-      // M2: Vol regime calmness — how quiet is recent vol? (0-25)
-      const m2=volRatio<=1?25:Math.max(0,25-(volRatio-1)*28); ms+=m2;
-      // M3: RSI neutrality — closer to 50 = less momentum = safer entry (0-20)
-      const m3=Math.max(0, 20-Math.abs(rsi-50)*0.52); ms+=m3;
-      // M4: Stochastic centrality — away from range edges = more room (0-15)
-      const m4=Math.max(0, 15-Math.abs(stochK-50)*0.32); ms+=m4;
-      // M5: Mixed tick direction — oscillating market is safest to enter (0-10)
-      if(n>=4){
-        const d3=[buf[n-1].p-buf[n-2].p, buf[n-2].p-buf[n-3].p, buf[n-3].p-buf[n-4].p];
-        if(d3.some(m=>m>0)&&d3.some(m=>m<0)) ms+=10;
+      // S4: RSI neutrality — closer to 50 = more balanced (0-15)
+      const s4=Math.max(0,Math.round(15-Math.abs(rsi-50)*0.45));
+      score+=s4;
+
+      // S5: Clean tick history — no spike in last 5 ticks (0-10)
+      let s5=10;
+      for(let i=n-5;i<n;i++){
+        if(Math.abs(buf[i].p-buf[i-1].p)>medMv*2.8){s5=0;break;}
       }
+      score+=s5;
 
-      // Bonus: good symbol history adds confidence (0-8 bonus)
-      const symBonus = symScore>=55 ? 5 : symScore>=45 ? 3 : 0;
-      const longevityBonus = longevity>=50 ? 3 : longevity>=35 ? 1 : 0;
-      ms = Math.min(100, ms + symBonus + longevityBonus);
+      // S6: Bollinger mid-zone — price in middle 60% of BB (0-10)
+      let s6=0;
+      if(n>=20){
+        const bbP=buf.slice(-20).map(b=>b.p);
+        const bbSMA=bbP.reduce((a,b)=>a+b,0)/20;
+        const bbStd=Math.sqrt(bbP.reduce((a,b)=>a+Math.pow(b-bbSMA,2),0)/20)||0.0001;
+        const bbPct=(price-(bbSMA-2*bbStd))/(4*bbStd); // 0=lower band,1=upper band
+        if(bbPct>=0.2&&bbPct<=0.8) s6=10;
+        else if(bbPct>=0.1&&bbPct<=0.9) s6=5;
+      }
+      score+=s6;
 
-      const THRESHOLD=46;
-      const sig=ms>=THRESHOLD?'BUY':'WAIT';
-      const reason=sig==='BUY'
-        ?'ms:'+Math.round(ms)+' RSI:'+rsi.toFixed(0)+' S:'+stochK.toFixed(0)
-        :'ms:'+Math.round(ms)+'<'+THRESHOLD+' RSI:'+rsi.toFixed(0);
-
-      _ui(sig, reason, sig==='BUY');
+      const ENTER_THRESHOLD=58;
+      const sig=score>=ENTER_THRESHOLD?'BUY':'WAIT';
+      const scoreStr='sc:'+score+' v:'+s1+' r:'+s2+' rh:'+s3+' rsi:'+s4;
+      _ui(sig, sig==='BUY'?scoreStr:'sc:'+score+'<'+ENTER_THRESHOLD+' '+scoreStr.slice(scoreStr.indexOf('v:')), sig==='BUY');
 
       if(sig==='BUY'&&!con&&!aiCool&&!isBuying){
         if(!authed||!activeToken||activeToken.length<10){
-          $('sigSub').textContent='⏳ Auth wait…';
+          $('sigSub').textContent='⏳ Auth…';
         } else {
-          doEntry(price, ms);
+          doEntry(price, score);
         }
       }
 
@@ -3486,18 +3365,14 @@ function closeContract(reason, fromAI){
 // KNOCK OUT — barrier physically hit
 // ═══════════════════════════════════════════
 function onKO(price){
-    // onKO is ONLY for visual effects. P&L is recorded by closeContract via poc.status='lost'.
-    // NEVER record aiLoss/aiPnl here — that causes double-counting.
     if(!con)return;
     const dir=price>=con.upper?'UPPER':'LOWER';
     recordBreak(sym,con.ticks);updatePatternUI(sym);
     showFlash('flashExit','KO! '+dir,3000);
     $('chartWrap').classList.add('danger');
     setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
-    toast('⚠️ Barrier area hit — waiting for Deriv settlement…','y',4000);
-    // Do NOT clear con here — Deriv will confirm via poc.status='lost'
-    // Do NOT send sell here — Deriv closes the contract automatically on KO
-    // Just record break for pattern analysis
+    flashBarriersKO(); // turn both lines red, then fade to preview
+    toast('⚠️ Barrier hit — waiting for Deriv settlement…','y',4000);
   }
 
 // ═══════════════════════════════════════════
