@@ -1797,8 +1797,8 @@ function handle(d){
     setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},500);
     setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
     return;
+    return;
   }
-}
 
 // ═══════════════════════════════════════════
 // BALANCE & USER
@@ -2010,12 +2010,6 @@ function logout(){
       crosshairMarkerRadius: 5,
       crosshairMarkerBorderColor: '#333333',
       crosshairMarkerBackgroundColor: '#ffffff',
-      autoscaleInfoProvider: () => ({
-        priceRange: {
-          minValue: con ? Math.min(con.upper, con.lower, prevP) : (prevP ? prevP - barrierDist(prevP) : 0),
-          maxValue: con ? Math.max(con.upper, con.lower, prevP) : (prevP ? prevP + barrierDist(prevP) : 0),
-        },
-      }),
       priceFormat: { type: 'price', precision: dp, minMove: Math.pow(10, -dp) },
     });
 
@@ -2064,12 +2058,6 @@ function _ensureBarrierLines(){
       lineVisible: false,
       lastValueVisible: false,
       priceLineVisible: false,
-      autoscaleInfoProvider: () => ({
-        priceRange: {
-          minValue: con ? Math.min(con.upper, con.lower, prevP) : (prevP ? prevP - barrierDist(prevP) : 0),
-          maxValue: con ? Math.max(con.upper, con.lower, prevP) : (prevP ? prevP + barrierDist(prevP) : 0),
-        },
-      }),
     });
   }
 }
@@ -2289,8 +2277,8 @@ function analyzeHistoricalBreaks(symKey) {
     // Barrier lines on chart are handled by appendBarrierPts (called just above)
   }
 
-  // ── ACTIVE CONTRACT ──
-  // Only process the active contract if it has been confirmed by Deriv (has realId)
+    }
+  }
   if(con && con.realId && !exitingNow && !isHistory){
     con.ticks++; ticksHeld++;
     // con.realId is set — Deriv has confirmed this contract. Safe to run all logic.
