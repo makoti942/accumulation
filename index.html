@@ -1331,7 +1331,7 @@ function handle(d){
     if(!symBufs[ts])symBufs[ts]=[];
     symBufs[ts].push(parseFloat(tk.quote));
     if(symBufs[ts].length>TICK_BUF)symBufs[ts].shift();
-    if(ts===sym)processTick(tk);
+    if(ts===sym){processTick(tk, false); _ensureBarrierLines(); appendBarrierPts(Math.floor(Date.now()/1000));}
     return;
   }
   if(t==='contracts_for'){
@@ -1797,27 +1797,7 @@ function handle(d){
     setTimeout(()=>{if(ws&&ws.readyState===1)send({balance:1});},500);
     setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
     return;
-    return;
   }
-
-// ═══════════════════════════════════════════
-// BALANCE & USER
-// ═══════════════════════════════════════════
-function updateBalanceUI(){
-  const v=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
-  $('hBalance').textContent=v;
-  $('userBal').textContent=v;
-  // Mobile balance pill — always visible on phone
-  if($('mobBalance'))$('mobBalance').textContent=v;
-  if($('mobBalPill'))$('mobBalPill').style.display=realBalance!==null?'flex':'none';
-  const balStr=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
-  if($('mobBalance'))$('mobBalance').textContent=balStr;
-}
-function showUserCard(){$('userSection').style.display='block';$('userName').textContent=userInfo.name||'Trader';$('userUid').textContent=userInfo.loginid||'—';}
-
-// ═══════════════════════════════════════════
-// ACCOUNT SWITCHER
-// ═══════════════════════════════════════════
 function renderAcctMenu(){
   if(!accountList||accountList.length<2){
     $('acctSwitcher').style.display='none';
@@ -1998,21 +1978,21 @@ function logout(){
     });
 
     // White price line exactly like Deriv accumulator
+    // White price line exactly like Deriv accumulator
     area = chart.addAreaSeries({
-      lineColor: '#333333',
-      topColor: 'rgba(51, 51, 51, 0.4)',
-      bottomColor: 'rgba(51, 51, 51, 0.1)',
+      lineColor: "#333333",
+      topColor: "rgba(51, 51, 51, 0.4)",
+      bottomColor: "rgba(51, 51, 51, 0.1)",
       lineWidth: 2,
       lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: true,
       crosshairMarkerVisible: true,
       crosshairMarkerRadius: 5,
-      crosshairMarkerBorderColor: '#333333',
-      crosshairMarkerBackgroundColor: '#ffffff',
-      priceFormat: { type: 'price', precision: dp, minMove: Math.pow(10, -dp) },
+      crosshairMarkerBorderColor: "#333333",
+      crosshairMarkerBackgroundColor: "#ffffff",
+      priceFormat: { type: "price", precision: dp, minMove: Math.pow(10, -dp) },
     });
-
     const ro = new ResizeObserver(() => {
       if(!chart || !el) return;
       const h = Math.max(280, el.parentElement ? el.parentElement.clientHeight : 320);
@@ -2242,11 +2222,11 @@ function analyzeHistoricalBreaks(symKey) {
   const pt={time:t,value:p};
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
   if(!isHistory){
-    try{area.update(pt);}catch(e){}
+    if(area){try{area.update(pt);}catch(e){console.error("Area update error:",e)}}
     appendBarrierPts(t);
   } else {
     // For history ticks, update area inline (setData after all done is backup)
-    try{area.update(pt);}catch(e){}
+    if(area){try{area.update(pt);}catch(e){console.error("Area update error:",e)}}
   }
   
   // Update prevP for next tick calculation
@@ -2276,56 +2256,25 @@ function analyzeHistoricalBreaks(symKey) {
     }
     // Barrier lines on chart are handled by appendBarrierPts (called just above)
   }
-
-    }
-  }
-  if(con && con.realId && !exitingNow && !isHistory){
+      const bd=barrierDist(p);
+      $("bUpper").textContent=(p+bd).toFixed(dp);
+      $("bLower").textContent=(p-bd).toFixed(dp);
+      $("bEntry").textContent="—";$("infoBarrier").textContent="±"+bd.toFixed(dp);
+    } else {
+    } else {
+    } else {
+    } else {
+    } else {
+    } else {
+    } else {
+      const bd=barrierDist(p);
+      $("bUpper").textContent=(p+bd).toFixed(dp);
+      $("bLower").textContent=(p-bd).toFixed(dp);
+      $("bEntry").textContent="—";$("infoBarrier").textContent="±"+bd.toFixed(dp);
+  if (con && con.realId && !exitingNow && !isHistory) {
+    const p_quote = parseFloat(tick.quote);
     con.ticks++; ticksHeld++;
-    // con.realId is set — Deriv has confirmed this contract. Safe to run all logic.
-    // P&L is updated strictly from Deriv API (proposal_open_contract)
-    // No local simulation fallback here to ensure account sync.
-
-    const dU=con.upper-p,dL=p-con.lower;
-    const half=(con.upper-con.lower)/2;
-    const nearDist=Math.min(dU,dL);
-    const nearBar=dU<dL?con.upper:con.lower;
-    const safetyPct=(nearDist/half)*100;
-
-    $('bUpper').textContent=con.upper.toFixed(dp);$('bLower').textContent=con.lower.toFixed(dp);
-    $('bEntry').textContent=con.entry.toFixed(dp);
-    $('bSafety').textContent=safetyPct.toFixed(1)+'%';
-    $('bSafety').style.color=safetyPct>55?'var(--green)':safetyPct>25?'var(--gold)':'var(--red)';
-
-    const bp=computeBreakProb(p,con,tickBuf);
-    exitProbability=bp;updateExitMeter(bp);
-
-    const hs=computeHoldScore(p,con,tickBuf);
-    $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
-    $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
-
-    // ════════════════════════════════════════════════════════════════
-    // EXIT ENGINE v6 — 4 RULES + BOLLINGER BAND. NOTHING ELSE.
-    // ════════════════════════════════════════════════════════════════
-    // SIMPLE IS MORE ACCURATE THAN COMPLEX.
-    // Every extra signal = more false positives = more early exits = losses.
-    //
-    // LEVEL 1 — fires immediately (tick ≥ 2):
-    //   E1. Spike: last tick ≥ 3× median AND toward barrier
-    //   E2. Double-spike: 2 consecutive big ticks toward barrier
-    //   E3. Critical zone: safety < 15%
-    //
-    // LEVEL 2 — fires after minHold ticks (payout has built up):
-    //   E4. Proximity push: safety < 35% AND 2+ ticks toward barrier
-    //   E5. Sustained run: 4+ consecutive ticks toward barrier
-    //   E6. Bollinger Band: price above upper BB toward upper barrier
-    //   E7. Fast spike-run: 3 consecutive ticks each ≥ 2× median toward barrier
-    // ════════════════════════════════════════════════════════════════
-
-    const n = tickBuf.length;
-    const canExit = con.ticks >= 2;
-
-    if(!canExit || !aiOn || con.pendingSell){
-      updateConUI();
+    const dU = con.upper - p_quote, dL = p_quote - con.lower;
       if(p>=con.upper||p<=con.lower){
         recordBreak(sym,con.ticks); updatePatternUI(sym);
         $('chartWrap').classList.add('danger');
