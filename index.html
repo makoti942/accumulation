@@ -1331,7 +1331,7 @@ function handle(d){
     if(!symBufs[ts])symBufs[ts]=[];
     symBufs[ts].push(parseFloat(tk.quote));
     if(symBufs[ts].length>TICK_BUF)symBufs[ts].shift();
-    if(ts===sym){processTick(tk, false); _ensureBarrierLines(); appendBarrierPts(Math.floor(Date.now()/1000));}
+    if(ts===sym)processTick(tk);
     return;
   }
   if(t==='contracts_for'){
@@ -1408,15 +1408,13 @@ function handle(d){
         if(area && priceHist.length>0){
           try{ area.setData(priceHist.slice()); }catch(e){}
         }
-        // Seed barrier preview lines with history
+        // Seed barrier preview lines with history — each point tracks its own price
         if(priceHist.length>0){
           _ensureBarrierLines();
-          const _pLast=priceHist[priceHist.length-1].value;
-          const _bd=barrierDist(_pLast);
-          const _bU=latestProposal&&latestProposal.barrier&&latestProposal.sym===ts?latestProposal.barrier:_pLast+_bd;
-          const _bL=latestProposal&&latestProposal.low_barrier&&latestProposal.sym===ts?latestProposal.low_barrier:_pLast-_bd;
-          try{ lineU&&lineU.setData(priceHist.map(pt=>({time:pt.time,value:_bU}))); }catch(e){}
-          try{ lineL&&lineL.setData(priceHist.map(pt=>({time:pt.time,value:_bL}))); }catch(e){}
+          // Only show barriers on the last portion of history (like Deriv — starts near current price)
+          const visibleHist = priceHist.slice(Math.max(0, priceHist.length - 60));
+          try{ lineU&&lineU.setData(visibleHist.map(pt=>({time:pt.time,value:pt.value+barrierDist(pt.value)}))); }catch(e){}
+          try{ lineL&&lineL.setData(visibleHist.map(pt=>({time:pt.time,value:pt.value-barrierDist(pt.value)}))); }catch(e){}
         }
         toast('📈 '+ts+' ready','g',1500);
       }
@@ -1798,6 +1796,26 @@ function handle(d){
     setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},1500);
     return;
   }
+}
+
+// ═══════════════════════════════════════════
+// BALANCE & USER
+// ═══════════════════════════════════════════
+function updateBalanceUI(){
+  const v=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
+  $('hBalance').textContent=v;
+  $('userBal').textContent=v;
+  // Mobile balance pill — always visible on phone
+  if($('mobBalance'))$('mobBalance').textContent=v;
+  if($('mobBalPill'))$('mobBalPill').style.display=realBalance!==null?'flex':'none';
+  const balStr=realBalance!==null?userCurrency+' '+realBalance.toFixed(2):'—';
+  if($('mobBalance'))$('mobBalance').textContent=balStr;
+}
+function showUserCard(){$('userSection').style.display='block';$('userName').textContent=userInfo.name||'Trader';$('userUid').textContent=userInfo.loginid||'—';}
+
+// ═══════════════════════════════════════════
+// ACCOUNT SWITCHER
+// ═══════════════════════════════════════════
 function renderAcctMenu(){
   if(!accountList||accountList.length<2){
     $('acctSwitcher').style.display='none';
@@ -1978,21 +1996,21 @@ function logout(){
     });
 
     // White price line exactly like Deriv accumulator
-    // White price line exactly like Deriv accumulator
     area = chart.addAreaSeries({
-      lineColor: "#333333",
-      topColor: "rgba(51, 51, 51, 0.4)",
-      bottomColor: "rgba(51, 51, 51, 0.1)",
+      lineColor: '#333333',
+      topColor: 'rgba(51, 51, 51, 0.4)',
+      bottomColor: 'rgba(51, 51, 51, 0.1)',
       lineWidth: 2,
       lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: true,
       crosshairMarkerVisible: true,
       crosshairMarkerRadius: 5,
-      crosshairMarkerBorderColor: "#333333",
-      crosshairMarkerBackgroundColor: "#ffffff",
-      priceFormat: { type: "price", precision: dp, minMove: Math.pow(10, -dp) },
+      crosshairMarkerBorderColor: '#333333',
+      crosshairMarkerBackgroundColor: '#ffffff',
+      priceFormat: { type: 'price', precision: dp, minMove: Math.pow(10, -dp) },
     });
+
     const ro = new ResizeObserver(() => {
       if(!chart || !el) return;
       const h = Math.max(280, el.parentElement ? el.parentElement.clientHeight : 320);
@@ -2006,6 +2024,8 @@ function logout(){
       el.style.height = h + 'px';
       chart.applyOptions({ width: el.clientWidth, height: h });
     }, 200);
+    // Ensure barrier lines are created immediately so they're always visible
+    setTimeout(()=>_ensureBarrierLines(), 100);
   }
 function mkLine(color,title,style,width){
   return chart.addLineSeries({color,lineWidth:width||2,lineStyle:style!==undefined?style:LightweightCharts.LineStyle.Solid,lastValueVisible:true,priceLineVisible:false,crosshairMarkerVisible:false,title,priceFormat:{type:'price',precision:dp,minMove:Math.pow(10,-dp)}});
@@ -2045,7 +2065,7 @@ function _setBarrierStyle(state){
   // state: 'preview' | 'active' | 'ko'
   if(!lineU||!lineL||!areaFill) return;
     const styles={
-    preview:{cu:'#33333344',cl:'#33333344',w:1,s:LightweightCharts.LineStyle.Dashed,tu:'',tl:'',fill:'rgba(0, 0, 0, 0.03)'},
+    preview:{cu:'#2196f3',  cl:'#2196f3',  w:1,s:LightweightCharts.LineStyle.Dashed,tu:'',tl:'',fill:'rgba(33, 150, 243, 0.07)'},
     active: {cu:'#00e676',  cl:'#00e676',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'PROFIT',tl:'',fill:'rgba(0, 230, 118, 0.2)'},
     ko:     {cu:'#ff1744',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'KO',tl:'',fill:'rgba(255, 23, 68, 0.3)'},
   };
@@ -2067,17 +2087,14 @@ function drawBarriers(){
       lastValueVisible:false,priceLineVisible:false,
       crosshairMarkerVisible:false,title:'',priceFormat:fmt});
   }
-  const base=priceHist.length>0?priceHist.slice(-100):(prevP?[{time:Math.floor(Date.now()/1000),value:prevP}]:[]);
+  // Use last 30 ticks as base so barriers only appear near current price region (like Deriv)
+  const base=priceHist.length>0?priceHist.slice(-30):(prevP?[{time:Math.floor(Date.now()/1000),value:prevP}]:[]);
   if(base.length>0){
     try{lineU.setData(base.map(pt=>({time:pt.time,value:con.upper})));}catch(e){}
     try{lineL.setData(base.map(pt=>({time:pt.time,value:con.lower})));}catch(e){}
     try{lineE.setData(base.map(pt=>({time:pt.time,value:con.entry})));}catch(e){}
     try{
       areaFill.setData(base.map(pt => ({time: pt.time, value: con.upper})));
-      // Note: We'll use the base price series as the "bottom" for areaFill if possible
-      // but Lightweight Charts area fills to 0 by default. 
-      // To get the "band" look, we would need a custom plugin or 2-series trick.
-      // For now, we ensure the background matches the user's "clean" white request.
     } catch(e){}
   }
 }
@@ -2222,11 +2239,11 @@ function analyzeHistoricalBreaks(symKey) {
   const pt={time:t,value:p};
   priceHist.push(pt);if(priceHist.length>TICK_BUF*5)priceHist.shift();
   if(!isHistory){
-    if(area){try{area.update(pt);}catch(e){console.error("Area update error:",e)}}
+    try{area.update(pt);}catch(e){}
     appendBarrierPts(t);
   } else {
     // For history ticks, update area inline (setData after all done is backup)
-    if(area){try{area.update(pt);}catch(e){console.error("Area update error:",e)}}
+    try{area.update(pt);}catch(e){}
   }
   
   // Update prevP for next tick calculation
@@ -2256,25 +2273,56 @@ function analyzeHistoricalBreaks(symKey) {
     }
     // Barrier lines on chart are handled by appendBarrierPts (called just above)
   }
-      const bd=barrierDist(p);
-      $("bUpper").textContent=(p+bd).toFixed(dp);
-      $("bLower").textContent=(p-bd).toFixed(dp);
-      $("bEntry").textContent="—";$("infoBarrier").textContent="±"+bd.toFixed(dp);
-    } else {
-    } else {
-    } else {
-    } else {
-    } else {
-    } else {
-    } else {
-      const bd=barrierDist(p);
-      $("bUpper").textContent=(p+bd).toFixed(dp);
-      $("bLower").textContent=(p-bd).toFixed(dp);
-      $("bEntry").textContent="—";$("infoBarrier").textContent="±"+bd.toFixed(dp);
-  if (con && con.realId && !exitingNow && !isHistory) {
-    const p_quote = parseFloat(tick.quote);
+
+  // ── ACTIVE CONTRACT ──
+  // Only process the active contract if it has been confirmed by Deriv (has realId)
+  if(con && con.realId && !exitingNow && !isHistory){
     con.ticks++; ticksHeld++;
-    const dU = con.upper - p_quote, dL = p_quote - con.lower;
+    // con.realId is set — Deriv has confirmed this contract. Safe to run all logic.
+    // P&L is updated strictly from Deriv API (proposal_open_contract)
+    // No local simulation fallback here to ensure account sync.
+
+    const dU=con.upper-p,dL=p-con.lower;
+    const half=(con.upper-con.lower)/2;
+    const nearDist=Math.min(dU,dL);
+    const nearBar=dU<dL?con.upper:con.lower;
+    const safetyPct=(nearDist/half)*100;
+
+    $('bUpper').textContent=con.upper.toFixed(dp);$('bLower').textContent=con.lower.toFixed(dp);
+    $('bEntry').textContent=con.entry.toFixed(dp);
+    $('bSafety').textContent=safetyPct.toFixed(1)+'%';
+    $('bSafety').style.color=safetyPct>55?'var(--green)':safetyPct>25?'var(--gold)':'var(--red)';
+
+    const bp=computeBreakProb(p,con,tickBuf);
+    exitProbability=bp;updateExitMeter(bp);
+
+    const hs=computeHoldScore(p,con,tickBuf);
+    $('iHold').textContent=hs+'%';$('iHold').style.color=hs>60?'var(--green)':hs>30?'var(--gold)':'var(--red)';
+    $('ovHold').textContent=hs+'%';$('infoHold').textContent=hs+'% safe';
+
+    // ════════════════════════════════════════════════════════════════
+    // EXIT ENGINE v6 — 4 RULES + BOLLINGER BAND. NOTHING ELSE.
+    // ════════════════════════════════════════════════════════════════
+    // SIMPLE IS MORE ACCURATE THAN COMPLEX.
+    // Every extra signal = more false positives = more early exits = losses.
+    //
+    // LEVEL 1 — fires immediately (tick ≥ 2):
+    //   E1. Spike: last tick ≥ 3× median AND toward barrier
+    //   E2. Double-spike: 2 consecutive big ticks toward barrier
+    //   E3. Critical zone: safety < 15%
+    //
+    // LEVEL 2 — fires after minHold ticks (payout has built up):
+    //   E4. Proximity push: safety < 35% AND 2+ ticks toward barrier
+    //   E5. Sustained run: 4+ consecutive ticks toward barrier
+    //   E6. Bollinger Band: price above upper BB toward upper barrier
+    //   E7. Fast spike-run: 3 consecutive ticks each ≥ 2× median toward barrier
+    // ════════════════════════════════════════════════════════════════
+
+    const n = tickBuf.length;
+    const canExit = con.ticks >= 2;
+
+    if(!canExit || !aiOn || con.pendingSell){
+      updateConUI();
       if(p>=con.upper||p<=con.lower){
         recordBreak(sym,con.ticks); updatePatternUI(sym);
         $('chartWrap').classList.add('danger');
