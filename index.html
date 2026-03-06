@@ -926,9 +926,6 @@ const WS_URL='wss://ws.binaryws.com/websockets/v3?app_id='+APP_ID;
 const OAUTH_URL='https://oauth.deriv.com/oauth2/authorize?app_id='+APP_ID+'&l=EN&brand=deriv';
 const TICK_BUF=100,MAX_FEED=40;
 const ALL_SYMS=[
-  {sym:'R_10',dp:3,name:'V10'},{sym:'R_25',dp:3,name:'V25'},
-  {sym:'R_50',dp:4,name:'V50'},{sym:'R_75',dp:4,name:'V75'},
-  {sym:'R_100',dp:2,name:'V100'},
   {sym:'1HZ10V',dp:3,name:'V10(1s)'},{sym:'1HZ25V',dp:3,name:'V25(1s)'},
   {sym:'1HZ50V',dp:4,name:'V50(1s)'},{sym:'1HZ75V',dp:4,name:'V75(1s)'},
   {sym:'1HZ100V',dp:2,name:'V100(1s)'}
@@ -963,6 +960,46 @@ let latestProposal=null,proposalStreamReqId=null;
 // Break history per symbol
 let breakHistory={},volScores={},lastVolSwitch=0;
 let contractsCache={},growthRetry=null,forceExec=true;
+let blacklisted = {};
+function calculateATR(period) {
+    if (tickBuf.length < period + 1) return 0;
+    let sum = 0;
+    for (let i = tickBuf.length - period; i < tickBuf.length; i++) {
+        sum += Math.abs(tickBuf[i].p - tickBuf[i-1].p);
+    }
+    return sum / period;
+}
+function calculateADX(period) {
+    if (tickBuf.length < period * 2) return 25; // Default to neutral/trending if not enough data
+    // Simplified ADX for demonstration; real one would be more complex
+    let upMoves = 0, downMoves = 0;
+    for (let i = tickBuf.length - period; i < tickBuf.length; i++) {
+        let diff = tickBuf[i].p - tickBuf[i-1].p;
+        if (diff > 0) upMoves += diff; else downMoves += Math.abs(diff);
+    }
+    let total = upMoves + downMoves;
+    return total > 0 ? (Math.abs(upMoves - downMoves) / total) * 100 : 0;
+}
+function calculateBBW() {
+    if (tickBuf.length < 20) return 0;
+    const prices = tickBuf.slice(-20).map(b => b.p);
+    const sma = prices.reduce((a, b) => a + b, 0) / 20;
+    const std = Math.sqrt(prices.reduce((a, b) => a + Math.pow(b - sma, 2), 0) / 20);
+    return (4 * std) / sma;
+}
+function blacklist(s, duration) {
+    blacklisted[s] = now() + duration;
+    toast('🚫 Blacklisted ' + s + ' for 5m', 'r');
+}
+function findNextMarket() {
+    return ALL_SYMS.find(s => {
+        if (blacklisted[s.sym] && blacklisted[s.sym] > now()) return false;
+        // Basic check for quiet market
+        const buf = symBufs[s.sym] || [];
+        if (buf.length < 20) return false;
+        return true; 
+    });
+}
 // VOICE
 let voiceOpen=false,voiceRunning=false,isSpeaking=false;
 let recognition=null,ariaVoice=null,voiceRestartTimer=null;
@@ -1113,7 +1150,18 @@ function bootApp(){
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&(!wsAlive||!ws||ws.readyState!==1)){reconnDelay=800;connect();}});
   document.addEventListener('touchstart',()=>{if(!wsAlive&&appReady){reconnDelay=800;connect();}},{passive:true});
   // Vol scan every 60s only when AI is on AND no active trade
-  setInterval(()=>{if(aiOn&&!con&&!isBuying&&now()-lastVolSwitch>55000)doVolScanAndSwitch(true);},60000);
+  setInterval(()=>{
+    if(aiOn&&!con&&!isBuying&&now()-lastVolSwitch>55000) {
+      const adx = calculateADX(14);
+      if (adx > 25) {
+          blacklist(sym, 300000);
+          const nextSym = findNextMarket();
+          if (nextSym) switchSym(nextSym.sym, nextSym.dp);
+      } else {
+          doVolScanAndSwitch(true);
+      }
+    }
+  },60000);
 }
 
 // ═══════════════════════════════════════════
@@ -2244,6 +2292,11 @@ function analyzeHistoricalBreaks(symKey) {
         setTimeout(()=>$('chartWrap').classList.remove('danger'),2500);
       }
       if(tp&&con.pnl>=tp) sniperExit(p,0,'Take Profit');
+      if(con.ticks >= 3 && con.ticks <= 7) sniperExit(p, 0, 'Hit and Run');
+      const currentATR = calculateATR(14);
+      if(window._lastATR && currentATR > window._lastATR * 1.2) sniperExit(p, 0, 'ATR Spike');
+      window._lastATR = currentATR;
+      if(con.ticks >= 38) sniperExit(p, 0, 'Hard Risk Limit');
       prevP=p; addTickRow(p,chg,t);
       $('sbTime').textContent=new Date(t*1000).toLocaleTimeString();
       return;
@@ -2884,6 +2937,10 @@ function scheduleAlternativeGrowth(){
       const shAvg=buf.slice(n-sh).reduce((a,b)=>a+b.p,0)/sh;
       const lgAvg=buf.slice(n-lg).reduce((a,b)=>a+b.p,0)/lg;
       const trendUp=shAvg>lgAvg;
+      const adx = calculateADX(14);
+      const bbw = calculateBBW();
+      const lastBreak = breakHistory[sym] && breakHistory[sym].length > 0 ? breakHistory[sym][breakHistory[sym].length - 1] : 999;
+      const currentRun = con ? con.ticks : 0;
       const rocP=Math.min(5,n-1);
       const roc=((buf[n-1].p-buf[n-1-rocP].p)/buf[n-1-rocP].p)*100;
       const momUp=roc>0;
@@ -2968,7 +3025,15 @@ function scheduleAlternativeGrowth(){
       score+=s6;
 
       const ENTER_THRESHOLD=SuperAI.config.entryThreshold;
-      const sig=score>=ENTER_THRESHOLD?'BUY':'WAIT';
+      let sig=score>=ENTER_THRESHOLD?'BUY':'WAIT';
+      if (sig === 'BUY') {
+          if (adx > 20 || bbw > 0.005) { // Assuming 0.005 as a threshold for BBW
+              sig = 'WAIT';
+          }
+          if (lastBreak < 30 || currentRun >= 15) {
+              sig = 'WAIT';
+          }
+      }
       const scoreStr='sc:'+score+' v:'+s1+' r:'+s2+' rh:'+s3+' rsi:'+s4;
       _ui(sig, sig==='BUY'?scoreStr:'sc:'+score+'<'+ENTER_THRESHOLD+' '+scoreStr.slice(scoreStr.indexOf('v:')), sig==='BUY');
 
