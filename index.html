@@ -1636,8 +1636,17 @@ function handle(d){
     if(poc.high_barrier&&parseFloat(poc.high_barrier)>0) con.upper=parseFloat(poc.high_barrier);
     if(poc.low_barrier&&parseFloat(poc.low_barrier)>0) con.lower=parseFloat(poc.low_barrier);
     if(poc.entry_spot&&parseFloat(poc.entry_spot)>0) con.entry=parseFloat(poc.entry_spot);
-    if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
-    // Track last known good payout — bid_price=0 in final poc should NOT overwrite real payout
+    if(poc.profit!==undefined) {
+      con.pnl=parseFloat(poc.profit);
+      // Show live profit on chart
+      if($('sPnl')) {
+        const val = con.pnl;
+        $('sPnl').textContent = (val>=0?'+':'')+'$'+Math.abs(val).toFixed(2);
+        $('sPnl').style.color = val>=0?'var(--green)':'var(--red)';
+        // Update barrier color based on profit/loss
+        _updateBarrierLiveColor(val >= 0);
+      }
+    }
     if(poc.bid_price!==undefined && parseFloat(poc.bid_price)>0){
       con.payout=parseFloat(poc.bid_price);
       lastKnownPayout=parseFloat(poc.bid_price); // remember this
@@ -1653,7 +1662,9 @@ function handle(d){
     }
     // Handle contract settlement — each status has a different payout field
     if(poc.status==='won'||poc.status==='lost'||poc.status==='sold'){
-      if(poc.profit!==undefined) con.pnl=parseFloat(poc.profit);
+      if(poc.profit!==undefined) {
+        con.pnl=parseFloat(poc.profit);
+      }
 
       if(poc.status==='won'){
         // poc.payout = final settlement amount for won contracts
@@ -1954,13 +1965,13 @@ function logout(){
       width: el.clientWidth || 400,
       height: chartH,
       layout: {
-        background: { color: '#0a0f1a' },
-        textColor: '#6b7a8d',
+        background: { color: '#ffffff' },
+        textColor: '#333333',
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: '#161e2e' },
-        horzLines: { color: '#161e2e' },
+        vertLines: { color: 'rgba(0, 0, 0, 0.05)' },
+        horzLines: { color: 'rgba(0, 0, 0, 0.05)' },
       },
       crosshair: {
         mode: LightweightCharts.CrosshairMode.Normal,
@@ -1987,16 +1998,24 @@ function logout(){
     });
 
     // White price line exactly like Deriv accumulator
-    area = chart.addLineSeries({
-      color: '#e0e8f0',
+    area = chart.addAreaSeries({
+      lineColor: '#333333',
+      topColor: 'rgba(51, 51, 51, 0.4)',
+      bottomColor: 'rgba(51, 51, 51, 0.1)',
       lineWidth: 2,
       lineStyle: LightweightCharts.LineStyle.Solid,
       priceLineVisible: false,
       lastValueVisible: true,
       crosshairMarkerVisible: true,
-      crosshairMarkerRadius: 4,
-      crosshairMarkerBorderColor: '#e0e8f0',
-      crosshairMarkerBackgroundColor: '#1a2d46',
+      crosshairMarkerRadius: 5,
+      crosshairMarkerBorderColor: '#333333',
+      crosshairMarkerBackgroundColor: '#ffffff',
+      autoscaleInfoProvider: () => ({
+        priceRange: {
+          minValue: con ? Math.min(con.upper, con.lower, prevP) : (prevP ? prevP - barrierDist(prevP) : 0),
+          maxValue: con ? Math.max(con.upper, con.lower, prevP) : (prevP ? prevP + barrierDist(prevP) : 0),
+        },
+      }),
       priceFormat: { type: 'price', precision: dp, minMove: Math.pow(10, -dp) },
     });
 
@@ -2021,9 +2040,8 @@ function barrierDist(p){const m={1:0.01516,2:0.02326,3:0.03121,4:0.03900,5:0.046
 
 // ── BARRIER LINE SYSTEM ──────────────────────────────────────────
 // Lines exist at ALL TIMES (pre-trade and during trade).
-// Pre-trade : dashed grey lines tracking the proposal barriers (move with price)
-// Active    : solid green upper / solid red lower (Deriv style)
-// After KO  : both lines turn red briefly then fade back to grey preview
+let areaFill = null;
+
 function _ensureBarrierLines(){
   if(!chart) return;
   const fmt={type:'price',precision:dp,minMove:Math.pow(10,-dp)};
@@ -2039,18 +2057,34 @@ function _ensureBarrierLines(){
       lastValueVisible:true,priceLineVisible:false,
       crosshairMarkerVisible:false,title:'▼',priceFormat:fmt});
   }
+  if(!areaFill){
+    areaFill=chart.addAreaSeries({
+      topColor:'rgba(0, 0, 0, 0.05)',
+      bottomColor:'rgba(0, 0, 0, 0.05)',
+      lineVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      autoscaleInfoProvider: () => ({
+        priceRange: {
+          minValue: con ? Math.min(con.upper, con.lower, prevP) : (prevP ? prevP - barrierDist(prevP) : 0),
+          maxValue: con ? Math.max(con.upper, con.lower, prevP) : (prevP ? prevP + barrierDist(prevP) : 0),
+        },
+      }),
+    });
+  }
 }
 function _setBarrierStyle(state){
   // state: 'preview' | 'active' | 'ko'
-  if(!lineU||!lineL) return;
-  const styles={
-    preview:{cu:'#ffffff50',cl:'#ffffff50',w:1,s:LightweightCharts.LineStyle.Dashed,tu:'▲',tl:'▼'},
-    active: {cu:'#00e676',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'▲ Upper',tl:'▼ Lower'},
-    ko:     {cu:'#ff1744',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'✕ KO',   tl:'✕ KO'},
+  if(!lineU||!lineL||!areaFill) return;
+    const styles={
+    preview:{cu:'#33333344',cl:'#33333344',w:1,s:LightweightCharts.LineStyle.Dashed,tu:'',tl:'',fill:'rgba(0, 0, 0, 0.03)'},
+    active: {cu:'#00e676',  cl:'#00e676',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'PROFIT',tl:'',fill:'rgba(0, 230, 118, 0.2)'},
+    ko:     {cu:'#ff1744',  cl:'#ff1744',  w:2,s:LightweightCharts.LineStyle.Solid, tu:'KO',tl:'',fill:'rgba(255, 23, 68, 0.3)'},
   };
   const st=styles[state]||styles.preview;
   try{lineU.applyOptions({color:st.cu,lineWidth:st.w,lineStyle:st.s,title:st.tu});}catch(e){}
   try{lineL.applyOptions({color:st.cl,lineWidth:st.w,lineStyle:st.s,title:st.tl});}catch(e){}
+  try{areaFill.applyOptions({topColor:st.fill,bottomColor:st.fill});}catch(e){}
 }
 function drawBarriers(){
   // Called when trade becomes active — switch to active style, seed full history
@@ -2070,6 +2104,13 @@ function drawBarriers(){
     try{lineU.setData(base.map(pt=>({time:pt.time,value:con.upper})));}catch(e){}
     try{lineL.setData(base.map(pt=>({time:pt.time,value:con.lower})));}catch(e){}
     try{lineE.setData(base.map(pt=>({time:pt.time,value:con.entry})));}catch(e){}
+    try{
+      areaFill.setData(base.map(pt => ({time: pt.time, value: con.upper})));
+      // Note: We'll use the base price series as the "bottom" for areaFill if possible
+      // but Lightweight Charts area fills to 0 by default. 
+      // To get the "band" look, we would need a custom plugin or 2-series trick.
+      // For now, we ensure the background matches the user's "clean" white request.
+    } catch(e){}
   }
 }
 function appendBarrierPts(t){
@@ -2078,6 +2119,7 @@ function appendBarrierPts(t){
     // Active trade: show fixed confirmed barriers
     try{if(lineU)lineU.update({time:t,value:con.upper});}catch(e){}
     try{if(lineL)lineL.update({time:t,value:con.lower});}catch(e){}
+    try{if(areaFill)areaFill.update({time:t,value:con.upper});}catch(e){}
     if(lineE&&con.entry)try{lineE.update({time:t,value:con.entry});}catch(e){}
   } else {
     // No trade: barriers track price using latest proposal or estimate
@@ -2094,6 +2136,7 @@ function appendBarrierPts(t){
     }
     try{if(lineU)lineU.update({time:t,value:bU});}catch(e){}
     try{if(lineL)lineL.update({time:t,value:bL});}catch(e){}
+    try{if(areaFill)areaFill.update({time:t,value:bU});}catch(e){}
   }
 }
 function clearBarriers(){
@@ -2110,6 +2153,15 @@ function flashBarriersKO(){
 // ═══════════════════════════════════════════
 // PATTERN ENGINE — learns from real barrier breaks
 // ═══════════════════════════════════════════
+function _updateBarrierLiveColor(isProfit){
+  if(!lineU || !lineL || !areaFill || !con) return;
+  const color = isProfit ? '#00e676' : '#ff1744';
+  const fill = isProfit ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 23, 68, 0.3)';
+  lineU.applyOptions({color, title: (isProfit?'PROFIT':'LOSS') + ': $' + con.pnl.toFixed(2)});
+  lineL.applyOptions({color});
+  areaFill.applyOptions({topColor: fill, bottomColor: fill});
+}
+
 function recordBreak(symKey,tickCount){
   if(!breakHistory[symKey])breakHistory[symKey]=[];
   breakHistory[symKey].push(tickCount);
