@@ -1191,14 +1191,7 @@ function connect(){
     clearInterval(pingTimer);clearInterval(heartbeatTimer);
     if(ws){try{ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;ws.close();}catch(e){}ws=null;}
     wsAlive=false;setDot('rc');
-    try{
-      ws=new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=129093');
-      console.log('[WS] Attempting connection...');
-    }catch(e){
-      console.error('[WS] Connection error:', e);
-      schedReconn();
-      return;
-    }
+    try{ws=new WebSocket('wss://ws.binaryws.com/websockets/v3?app_id=129093');}catch(e){schedReconn();return;}
     connTO=setTimeout(()=>{if(!wsAlive){try{ws&&ws.close();}catch(e){}schedReconn();}},12000);
     ws.onopen=()=>{
       clearTimeout(connTO);wsAlive=true;reconnDelay=800;
@@ -1211,9 +1204,9 @@ function connect(){
       }
       pingTimer=setInterval(()=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify({ping:1}));},15000);
     };
-    ws.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(err){console.error('[WS] Message parse error:', err);}};
-    ws.onerror=(err)=>{wsAlive=false;setDot('err');$('connBanner').classList.add('show');console.error('[WS] WebSocket error:', err);};
-    ws.onclose=(evt)=>{wsAlive=false;setDot('rc');$('connBanner').classList.add('show');console.log('[WS] Connection closed, code:', evt.code);schedReconn();};
+    ws.onmessage=e=>{try{handle(JSON.parse(e.data));}catch(err){}};
+    ws.onerror=()=>{wsAlive=false;setDot('err');$('connBanner').classList.add('show');};
+    ws.onclose=()=>{wsAlive=false;setDot('rc');$('connBanner').classList.add('show');schedReconn();};
   }
 function schedReconn(){clearTimeout(reconnTimer);reconnTimer=setTimeout(()=>{reconnDelay=Math.min(reconnDelay*1.5,15000);connect();},reconnDelay);}
 function send(obj){
@@ -2433,35 +2426,6 @@ function analyzeHistoricalBreaks(symKey) {
     if (!exitReason && dangerScore >= SuperAI.config.dangerExit) {
       exitReason = '🎯AI:' + dangerScore + '%';
     }
-    
-    // ── POSP PREDICTIVE EXIT: Market state analysis ──
-    if (!exitReason) {
-      const pospExitState = SuperAI.predictMarketState(tickBuf);
-      const nextDir = SuperAI.predictNextTickDirection(tickBuf);
-      
-      // If market transitions to VOLATILE with high break risk, exit proactively
-      if (pospExitState.state === 'VOLATILE' && pospExitState.breakRisk > 75 && safetyPct < 40) {
-        exitReason = '🔮POSP:Vol>' + pospExitState.breakRisk + '%';
-      }
-      
-      // If POSP predicts sustained directional movement toward barrier
-      if (!exitReason && nextDir.probability > 70 && nextDir.direction === (toBarDir ? 'UP' : 'DOWN')) {
-        if (safetyPct < 35) {
-          exitReason = '🔮POSP:Dir>' + nextDir.probability + '%';
-        }
-      }
-    }
-    
-    // ── APERO RISK MANAGEMENT: Dynamic position sizing exit ──
-    if (!exitReason && canExitSoft) {
-      const riskMultiplier = SuperAI.calculateRiskAdjustedMultiplier(50, 'STABLE', 50);
-      const maxSafetyThreshold = 30 * riskMultiplier;
-      
-      // Exit if safety drops below risk-adjusted threshold
-      if (safetyPct < maxSafetyThreshold && con.ticks >= 4) {
-        exitReason = '🔮APERO:Safety<' + maxSafetyThreshold.toFixed(0) + '%';
-      }
-    }
 
     // ── PREDICTIVE: linear regression projects price outside barrier ──
     if(!exitReason && n>=10){
@@ -3303,37 +3267,11 @@ function scheduleAlternativeGrowth(){
 
       const ENTER_THRESHOLD=SuperAI.config.entryThreshold;
       let sig=score>=ENTER_THRESHOLD?'BUY':'WAIT';
-      
-      // ═══════════════════════════════════════════════════════════════
-      // INTEGRATE ADVANCED STRATEGIES: QTAE, POSP, APERO
-      // ═══════════════════════════════════════════════════════════════
-      const qtaeSignal = SuperAI.computeQTAESignal(buf);
-      const pospState = SuperAI.predictMarketState(buf);
-      const nextTickDir = SuperAI.predictNextTickDirection(buf);
-      const riskLevel = pospState.breakRisk > 70 ? 'CONSERVATIVE' : pospState.breakRisk > 50 ? 'MODERATE' : 'AGGRESSIVE';
-      const optimalStake = SuperAI.optimizeStakeSize(realBalance || 100, riskLevel, score);
-      const optimalDuration = SuperAI.optimizeDuration(pospState.state, score);
-      const riskMultiplier = SuperAI.calculateRiskAdjustedMultiplier(score, pospState.state, pospState.breakRisk);
-      
       if (sig === 'BUY') {
-          // Reject if POSP predicts imminent barrier break
-          if (pospState.breakRisk >= 75) {
+          if (adx > 20 || bbw > 0.005) { // Assuming 0.005 as a threshold for BBW
               sig = 'WAIT';
           }
-          // Reject if ADX too high (trending) or BBW too high (volatile)
-          if (adx > 20 || bbw > 0.005) {
-              sig = 'WAIT';
-          }
-          // Reject if recent breaks or long running trades
           if (lastBreak < 30 || currentRun >= 15) {
-              sig = 'WAIT';
-          }
-          // Only enter if QTAE confidence is sufficient
-          if (qtaeSignal.confidence < 50) {
-              sig = 'WAIT';
-          }
-          // Only enter if market state is favorable (not VOLATILE with high break risk)
-          if (pospState.state === 'VOLATILE' && pospState.breakRisk > 65) {
               sig = 'WAIT';
           }
       }
@@ -4197,6 +4135,5 @@ window.__selfTestGrowth=function(){
 }
 window.__setForceExec=function(v){try{forceExec=!!v;toast('ForceExec:'+forceExec,'p',2000);}catch(_){}}
 </script>
-<script src="health-check.js"></script>
 </body>
 </html>
