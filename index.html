@@ -2875,7 +2875,7 @@ const SuperAI = {
     else if (breakRisk > 50) baseMultiplier -= 0.15;
     
     return Math.max(0.5, Math.min(2.0, baseMultiplier));
-  }
+  },
   detectRegime: function(buf) {
     if (buf.length < 30) return 'STABLE';
     const prices = buf.slice(-30).map(b => b.p);
