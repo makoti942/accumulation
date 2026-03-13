@@ -2306,6 +2306,17 @@ function analyzeHistoricalBreaks(symKey) {
       $('bEntry').textContent='—';$('infoBarrier').textContent='±'+bd.toFixed(dp);
     }
     // Barrier lines on chart are handled by appendBarrierPts (called just above)
+    
+    // MACD-BASED AI ENTRY LOGIC
+    // Only check for entry when: AI enabled, no active contract, not buying, enough data
+    if(aiOn && !con && !isBuying && tickBuf.length >= 26 && !aiCool){
+      const macdEntry = SuperAI.checkMACDEntry(tickBuf);
+      if(macdEntry.shouldEnter && macdEntry.confidence >= 70){
+        console.log('[AI-MACD] Entry signal! Confidence:', macdEntry.confidence + '%');
+        toast('🤖 MACD Entry (' + macdEntry.confidence + '%)','p',2000);
+        buyContract(true);
+      }
+    }
   }
 
   // ── ACTIVE CONTRACT ──
@@ -2593,6 +2604,99 @@ function analyzeHistoricalBreaks(symKey) {
 // Returns breakProb 0-100 (chance barrier is hit in next 5 ticks)
 // ══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════
+// MACD INDICATOR CALCULATION
+// ═══════════════════════════════════════════
+function calculateEMA(prices, period) {
+  if (prices.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function calculateMACD(buf) {
+  if (buf.length < 26) return { macdLine: 0, signalLine: 0, histogram: 0, avgAbsHistogram: 0 };
+  
+  const prices = buf.map(b => b.p);
+  const ema12 = calculateEMA(prices, 12);
+  const ema26 = calculateEMA(prices, 26);
+  
+  if (ema12 === null || ema26 === null) {
+    return { macdLine: 0, signalLine: 0, histogram: 0, avgAbsHistogram: 0 };
+  }
+  
+  const macdLine = ema12 - ema26;
+  
+  // Calculate MACD line for all points to get signal line
+  let macdLines = [];
+  for (let i = 25; i < prices.length; i++) {
+    const e12 = calculateEMA(prices.slice(0, i + 1), 12);
+    const e26 = calculateEMA(prices.slice(0, i + 1), 26);
+    if (e12 !== null && e26 !== null) {
+      macdLines.push(e12 - e26);
+    }
+  }
+  
+  const signalLine = macdLines.length >= 9 ? calculateEMA(macdLines, 9) : (macdLines.length > 0 ? macdLines[macdLines.length - 1] : 0);
+  const histogram = macdLine - signalLine;
+  
+  // Calculate average absolute histogram for the last 20 MACD values
+  const recentMacdCount = Math.min(20, macdLines.length);
+  let avgAbsHistogram = 0;
+  if (recentMacdCount > 0) {
+    const recentMacdLines = macdLines.slice(-recentMacdCount);
+    const recentSignalLines = [];
+    for (let i = 0; i < recentMacdLines.length; i++) {
+      const sl = calculateEMA(recentMacdLines.slice(0, i + 1), 9);
+      recentSignalLines.push(sl !== null ? sl : recentMacdLines[i]);
+    }
+    const histograms = recentMacdLines.map((ml, i) => Math.abs(ml - recentSignalLines[i]));
+    avgAbsHistogram = histograms.reduce((a, b) => a + b, 0) / histograms.length || 0.0001;
+  }
+  
+  return {
+    macdLine: macdLine,
+    signalLine: signalLine,
+    histogram: histogram,
+    avgAbsHistogram: avgAbsHistogram
+  };
+}
+
+// ═══════════════════════════════════════════
+// MACD VOLATILITY SCORING
+// ═══════════════════════════════════════════
+function calculateMACDScore(buf) {
+  if (buf.length < 26) return { macdScore: 0, histScore: 0, lineScore: 0 };
+  
+  const macd = calculateMACD(buf);
+  const prices = buf.map(b => b.p);
+  const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length || 0.0001;
+  
+  // Histogram score: prefer very short histograms
+  const histThreshold = macd.avgAbsHistogram * 2;
+  const histScore = 100 * (1 - Math.min(1, Math.abs(macd.histogram) / (histThreshold || 0.0001)));
+  
+  // Line proximity score: both MACD and Signal lines close to zero baseline
+  const lineProximityThreshold = avgPrice * 0.001; // 0.1% of average price
+  const combinedLineDistance = Math.abs(macd.macdLine) + Math.abs(macd.signalLine);
+  const lineScore = 100 * (1 - Math.min(1, combinedLineDistance / (lineProximityThreshold || 0.0001)));
+  
+  // Combined MACD score (60% histogram, 40% line proximity)
+  const macdScore = (histScore * 0.6) + (lineScore * 0.4);
+  
+  return {
+    macdScore: Math.max(0, Math.min(100, Math.round(macdScore))),
+    histScore: Math.round(histScore),
+    lineScore: Math.round(lineScore),
+    histogram: macd.histogram,
+    macdLine: macd.macdLine,
+    signalLine: macd.signalLine
+  };
+}
+
 const SuperAI = {
   config: { regimeThreshold: 0.65, exhaustionTicks: 9, dangerExit: 65, entryThreshold: 55 },
   
@@ -2826,6 +2930,49 @@ const SuperAI = {
     if ((moves.reduce((a, b) => a + b, 0) / 5) * 2 > nearDist) danger += 40;
     if (!((toUpper && pressure > 0) || (!toUpper && pressure < 0)) && exhaustion > 70) danger -= 15;
     return Math.min(100, Math.max(0, Math.round(danger)));
+  },
+  
+  // ═══════════════════════════════════════════════════════════════
+  // MACD-BASED ENTRY SIGNAL
+  // Entry when histogram is near-zero AND both lines are close to baseline
+  // ═══════════════════════════════════════════════════════════════
+  checkMACDEntry: function(buf) {
+    if (buf.length < 26) return { shouldEnter: false, confidence: 0, reason: 'Insufficient data' };
+    
+    const macdData = calculateMACD(buf);
+    
+    // Condition 1: Histogram must be very short (near-zero)
+    // We want histogram < 5% of average absolute histogram
+    const histogramThreshold = macdData.avgAbsHistogram * 0.05;
+    const histogramCondition = Math.abs(macdData.histogram) < (histogramThreshold || 0.0001);
+    
+    // Condition 2: Both MACD and Signal lines very close to baseline
+    // Combined distance should be minimal
+    const prices = buf.map(b => b.p);
+    const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length || 0.0001;
+    const lineProximityThreshold = avgPrice * 0.0005; // 0.05% of average price
+    const lineCondition = (Math.abs(macdData.macdLine) + Math.abs(macdData.signalLine)) < (lineProximityThreshold || 0.0001);
+    
+    // Calculate confidence based on how tight the conditions are
+    let confidence = 0;
+    if (histogramCondition) confidence += 50;
+    if (lineCondition) confidence += 50;
+    
+    // Bonus if both conditions are extremely tight
+    if (histogramCondition && lineCondition) {
+      const histRatio = Math.abs(macdData.histogram) / (histogramThreshold || 0.0001);
+      const lineRatio = (Math.abs(macdData.macdLine) + Math.abs(macdData.signalLine)) / (lineProximityThreshold || 0.0001);
+      confidence = Math.min(100, 50 + (1 - histRatio) * 25 + (1 - lineRatio) * 25);
+    }
+    
+    return {
+      shouldEnter: histogramCondition && lineCondition,
+      confidence: Math.round(confidence),
+      histogram: macdData.histogram,
+      macdLine: macdData.macdLine,
+      signalLine: macdData.signalLine,
+      reason: histogramCondition && lineCondition ? 'MACD entry signal' : 'Waiting for MACD alignment'
+    };
   }
 };
 
@@ -2995,11 +3142,17 @@ function updateExitMeter(bp){
       const recencyAdj = recencyRatio>1.5 ? -(recencyRatio-1.5)*20 : recencyRatio<0.8 ? 8 : 0;
 
       // ── FINAL WEIGHTED SCORE ────────────────────────────────────
+      // ── 6. MACD VOLATILITY SCORE ──────────────────────────────────
+      // Prefer volatilities where MACD histogram is short and lines are near baseline
+      const macdMetrics = calculateMACDScore(buf);
+      const macdWeight = 0.15; // 15% of final score
+      
       const rawScore =
-        spikeScore     * 0.35 +
-        longevityScore * 0.32 +
-        smoothScore    * 0.20 +
-        trendScore     * 0.13;
+        spikeScore     * 0.30 +
+        longevityScore * 0.28 +
+        smoothScore    * 0.17 +
+        trendScore     * 0.10 +
+        macdMetrics.macdScore * macdWeight;
       const score = Math.max(0, Math.min(100, Math.round(rawScore + recencyAdj)));
 
       return {
@@ -3008,6 +3161,7 @@ function updateExitMeter(bp){
         smoothScore:  Math.round(smoothScore),
         longevity:    Math.round(longevityScore),
         trendScore:   Math.round(trendScore),
+        macdScore:    macdMetrics.macdScore,
         breakRisk:    Math.round(100-score),
         // legacy UI fields
         stability:    Math.round((spikeScore+smoothScore)/2),
