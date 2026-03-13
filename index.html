@@ -605,7 +605,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
   </button>
   <div class="mob-center-info">
     <div class="mob-sym-price">
-      <span class="mob-sym-tag" id="mobSymTag">R_10</span>
+      <span class="mob-sym-tag" id="mobSymTag">V10(1s)</span>
       <span class="mob-price" id="mobPrice">—</span>
     </div>
     <div id="mobPnlRow" style="display:none;" class="mob-pnl-row">—</div>
@@ -711,17 +711,11 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
       <div class="sec">
         <div class="sec-title">Volatility Index</div>
         <div class="sym-list" id="symList">
-          <button class="sym-btn active" data-sym="R_10" data-dp="3">Volatility 10 <span class="sym-badge">V10</span></button>
-          <button class="sym-btn" data-sym="R_25" data-dp="3">Volatility 25 <span class="sym-badge">V25</span></button>
-          <button class="sym-btn" data-sym="R_50" data-dp="4">Volatility 50 <span class="sym-badge">V50</span></button>
-          <button class="sym-btn" data-sym="R_75" data-dp="4">Volatility 75 <span class="sym-badge">V75</span></button>
-          <button class="sym-btn" data-sym="R_100" data-dp="2">Volatility 100 <span class="sym-badge">V100</span></button>
-          <div style="font-size:9px;color:var(--gold);font-weight:700;padding:4px 0 2px;letter-spacing:.8px;">⚡ 1-SECOND TICKS</div>
-          <button class="sym-btn" data-sym="1HZ10V" data-dp="3">Volatility 10 (1s) <span class="sym-badge">V10·1s</span></button>
-          <button class="sym-btn" data-sym="1HZ25V" data-dp="3">Volatility 25 (1s) <span class="sym-badge">V25·1s</span></button>
-          <button class="sym-btn" data-sym="1HZ50V" data-dp="4">Volatility 50 (1s) <span class="sym-badge">V50·1s</span></button>
-          <button class="sym-btn" data-sym="1HZ75V" data-dp="4">Volatility 75 (1s) <span class="sym-badge">V75·1s</span></button>
-          <button class="sym-btn" data-sym="1HZ100V" data-dp="2">Volatility 100 (1s) <span class="sym-badge">V100·1s</span></button>
+          <button class="sym-btn active" data-sym="1HZ10V" data-dp="3">Volatility 10 (1s) <span class="sym-badge">V10</span></button>
+          <button class="sym-btn" data-sym="1HZ25V" data-dp="3">Volatility 25 (1s) <span class="sym-badge">V25</span></button>
+          <button class="sym-btn" data-sym="1HZ50V" data-dp="4">Volatility 50 (1s) <span class="sym-badge">V50</span></button>
+          <button class="sym-btn" data-sym="1HZ75V" data-dp="4">Volatility 75 (1s) <span class="sym-badge">V75</span></button>
+          <button class="sym-btn" data-sym="1HZ100V" data-dp="2">Volatility 100 (1s) <span class="sym-badge">V100</span></button>
         </div>
       </div>
 
@@ -845,7 +839,7 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
 <!-- STATUS BAR -->
 <div class="statusbar">
   <div class="sb-items">
-    <span id="sbSym">R_10</span>
+    <span id="sbSym">V10(1s)</span>
     <span id="sbPing">Ping:—</span>
     <span id="sbAuth" style="color:var(--sub);">Demo</span>
     <span id="sbAI" style="color:var(--sub);">AI:OFF</span>
@@ -939,7 +933,7 @@ const $=id=>document.getElementById(id);
 let ws=null,wsAlive=false,pingTimer=null,pingT=0,lat=0;
 let reconnDelay=800,reconnTimer=null,connTO=null,appReady=false;
 let heartbeatTimer=null,lastMsgTime=0;
-let sym='R_10',dp=3,gr=3,stake=10,tp=null;
+let sym='1HZ10V',dp=3,gr=3,stake=10,tp=null;
 let activeToken='',authed=false,userInfo={},userCurrency='USD';
 let isBuying=false,pendingProposal=null,proposalReqId=null,proposalReqCounter=0;
 let lastKnownPayout=0; // Tracks highest bid_price seen — used when final poc has bid_price=0
