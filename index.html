@@ -711,11 +711,17 @@ input[type=range]{width:100%;height:4px;accent-color:var(--blue);cursor:pointer;
       <div class="sec">
         <div class="sec-title">Volatility Index</div>
         <div class="sym-list" id="symList">
-          <button class="sym-btn active" data-sym="1HZ10V" data-dp="3">Volatility 10 (1s) <span class="sym-badge">V10</span></button>
-          <button class="sym-btn" data-sym="1HZ25V" data-dp="3">Volatility 25 (1s) <span class="sym-badge">V25</span></button>
-          <button class="sym-btn" data-sym="1HZ50V" data-dp="4">Volatility 50 (1s) <span class="sym-badge">V50</span></button>
-          <button class="sym-btn" data-sym="1HZ75V" data-dp="4">Volatility 75 (1s) <span class="sym-badge">V75</span></button>
-          <button class="sym-btn" data-sym="1HZ100V" data-dp="2">Volatility 100 (1s) <span class="sym-badge">V100</span></button>
+          <button class="sym-btn" data-sym="R_10" data-dp="3">Volatility 10 <span class="sym-badge">V10</span></button>
+          <button class="sym-btn" data-sym="R_25" data-dp="3">Volatility 25 <span class="sym-badge">V25</span></button>
+          <button class="sym-btn" data-sym="R_50" data-dp="4">Volatility 50 <span class="sym-badge">V50</span></button>
+          <button class="sym-btn" data-sym="R_75" data-dp="4">Volatility 75 <span class="sym-badge">V75</span></button>
+          <button class="sym-btn" data-sym="R_100" data-dp="2">Volatility 100 <span class="sym-badge">V100</span></button>
+          <div style="font-size:9px;color:var(--gold);font-weight:700;padding:4px 0 2px;letter-spacing:.8px;">⚡ 1-SECOND TICKS</div>
+          <button class="sym-btn active" data-sym="1HZ10V" data-dp="3">Volatility 10 (1s) <span class="sym-badge">V10·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ25V" data-dp="3">Volatility 25 (1s) <span class="sym-badge">V25·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ50V" data-dp="4">Volatility 50 (1s) <span class="sym-badge">V50·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ75V" data-dp="4">Volatility 75 (1s) <span class="sym-badge">V75·1s</span></button>
+          <button class="sym-btn" data-sym="1HZ100V" data-dp="2">Volatility 100 (1s) <span class="sym-badge">V100·1s</span></button>
         </div>
       </div>
 
@@ -920,6 +926,9 @@ const WS_URL='wss://ws.binaryws.com/websockets/v3?app_id='+APP_ID;
 const OAUTH_URL='https://oauth.deriv.com/oauth2/authorize?app_id='+APP_ID+'&l=EN&brand=deriv';
 const TICK_BUF=100,MAX_FEED=40;
 const ALL_SYMS=[
+  {sym:'R_10',dp:3,name:'V10'},{sym:'R_25',dp:3,name:'V25'},
+  {sym:'R_50',dp:4,name:'V50'},{sym:'R_75',dp:4,name:'V75'},
+  {sym:'R_100',dp:2,name:'V100'},
   {sym:'1HZ10V',dp:3,name:'V10(1s)'},{sym:'1HZ25V',dp:3,name:'V25(1s)'},
   {sym:'1HZ50V',dp:4,name:'V50(1s)'},{sym:'1HZ75V',dp:4,name:'V75(1s)'},
   {sym:'1HZ100V',dp:2,name:'V100(1s)'}
@@ -1539,10 +1548,15 @@ function handle(d){
       }else if(ec==='InsufficientBalance'||em.toLowerCase().includes('insufficient')){
         toast('❌ Insufficient balance — reduce stake or top up account','r',8000);
         if(aiStatusEl) aiStatusEl.textContent='❌ Insufficient balance — reduce stake';
-      }else if(ec==='InvalidToken'||ec==='AuthorizationRequired'){
-        toast('❌ Invalid token — please re-login','r',8000);
+      }else if(ec==='InvalidToken'){
+        toast('❌ Session expired — please re-login','r',8000);
         authed=false;
         setTimeout(()=>showLogin(),2000);
+      }else if(ec==='AuthorizationRequired'){
+        authed=false;
+        if(ws&&ws.readyState===1&&activeToken){ws.send(JSON.stringify({authorize:activeToken}));}
+        else{connect();}
+        setTimeout(()=>{if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();},2000);
       }else if(ec==='ContractBuyValidationError'||/expired/i.test(em)||/invalid/i.test(em)){
         // Proposal expired or invalid — clear cache and restart stream
         latestProposal=null;
@@ -3606,8 +3620,8 @@ function updateProposalStream(){
           connect(); return;
         }
         if(!authed){
-          toast('⚠️ Authorization required', 'y', 5000);
-          showLogin(); return;
+          if(!activeToken){showLogin();return;}
+          toast('⏳ Authorizing… please try again in a moment','y',3000);return;
         }
         if(con){toast('Trade already active','r');return;}
 
@@ -4232,10 +4246,13 @@ function toggleVP(){
 function setupEvents(){
   $('aiToggle').addEventListener('change',function(){
     aiOn=this.checked;
-    if(aiOn && (!authed || !activeToken)){
+    if(aiOn && !activeToken){
       this.checked=false;aiOn=false;
       toast('⚠️ Login to your Deriv account to enable AI trading','y',5000);
       showLogin();return;
+    }
+    if(aiOn && !authed){
+      toast('⏳ Connecting to Deriv… AI will start once authorized','y',4000);
     }
     $('aiBody').classList.toggle('on',aiOn);
     $('aiOv').classList.toggle('on',aiOn);
