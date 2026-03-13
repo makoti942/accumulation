@@ -1231,104 +1231,77 @@ function send(obj){
 // ═══════════════════════════════════════════
 function handle(d){
     if(!d) return;
-    if(d.error) {
+    // Only intercept raw errors that have NO msg_type (generic WS errors)
+    // Errors that DO have msg_type (e.g. authorize) are handled below by their own case
+    if(d.error && !d.msg_type) {
       const ec = d.error.code;
-      if(ec === 'AuthorizationRequired' || ec === 'InvalidToken') {
-        if(activeToken && !window._authRetried) {
-          window._authRetried = true;
-          setTimeout(() => { if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize: activeToken})); }, 1000);
-          return;
-        }
-        // No token or retried already — show login
-        window._authRetried = false;
-        if(!activeToken) { showLogin(); return; }
+      const em = d.error.message || 'Unknown error';
+      // If we have a token, try a silent re-auth once
+      if((ec === 'AuthorizationRequired' || ec === 'InvalidToken') && activeToken && !window._globalAuthRetried) {
+        window._globalAuthRetried = true;
+        setTimeout(() => {
+          window._globalAuthRetried = false;
+          if(ws && ws.readyState === 1) ws.send(JSON.stringify({authorize: activeToken}));
+        }, 800);
         return;
       }
+      toast('⚠️ ' + em, 'r');
+      return;
     }
     if(!d.msg_type) return;
     const t = d.msg_type;
   if(t==='authorize'){
-    window._authInProgress = false;
-    if(!d.error) {
-      window._authRetried = false; // Reset on any successful auth
-    }
-    if(d.error){
-      const ec=d.error.code||'',em=d.error.message||'';
-      const hard=['InvalidToken','AuthorizationRequired','InvalidAppID'];
-      console.error('[Deriv] Auth Error:', ec, em);
-      if(hard.includes(ec)){
-        // Give one silent retry before wiping — handles transient InvalidToken after fresh OAuth redirect
-        if(!window._authRetried){
-          window._authRetried = true;
-          console.log('[Deriv] Hard auth error on first attempt, retrying once silently...');
-          setTimeout(()=>{
-            if(ws && ws.readyState===1 && activeToken) ws.send(JSON.stringify({authorize: activeToken}));
-            else connect();
-          }, 2000);
-          return;
-        }
-        // Second failure — definitely bad token, wipe and show login
-        if(activeLoginid && tokenStore[activeLoginid]){
-            delete tokenStore[activeLoginid];
-            saveTokenStore();
-        }
-        lsDel('deriv_active');
-        activeToken = '';
-        activeLoginid = '';
-        authed = false;
-        window._authRetried = false;
-        toast('Session expired ('+ec+'). Please log in again.', 'r', 5000);
-        showLogin();
-      }else{
-        // For non-hard errors (timeouts, etc), try one silent retry before kicking to login
-        if(!window._authRetried){
-          window._authRetried = true;
-          console.log('[Deriv] Transient auth error, retrying silently...');
-          setTimeout(()=>{if(ws&&ws.readyState===1&&activeToken)ws.send(JSON.stringify({authorize:activeToken}));else connect();},2000);
-        } else {
-          window._authRetried = false;
+      window._authRetried = false;
+      if(d.error){
+        const ec = d.error.code || '';
+        const em = d.error.message || '';
+        console.error('[Deriv Auth Error]', ec, em);
+        // Only wipe token if Deriv says the token is definitively invalid
+        if(ec === 'InvalidToken' || ec === 'InvalidAppID'){
+          if(activeLoginid && tokenStore[activeLoginid]){ delete tokenStore[activeLoginid]; saveTokenStore(); }
+          lsDel('deriv_active');
+          activeToken = ''; activeLoginid = ''; authed = false;
+          toast('Session expired. Please log in again.', 'r', 5000);
           showLogin();
+        } else {
+          // For other errors (rate limit, temporary), just retry once
+          setTimeout(() => { if(ws && ws.readyState === 1 && activeToken) ws.send(JSON.stringify({authorize: activeToken})); }, 3000);
         }
+        return;
       }
+      // SUCCESS
+      authed = true;
+      const a = d.authorize;
+      const realLoginid = a.loginid || activeLoginid;
+      activeLoginid = realLoginid;
+      userCurrency = a.currency || 'USD';
+      userInfo = { name: a.fullname || a.loginid || 'Trader', loginid: realLoginid, currency: userCurrency };
+      console.log('[Deriv] Authorized:', userInfo.name, '|', realLoginid, '| Balance:', a.balance);
+      realBalance = a.balance !== undefined ? parseFloat(a.balance) : null;
+      if(realLoginid && activeToken && activeToken.length > 10){
+        tokenStore[realLoginid] = { token: activeToken, currency: userCurrency, is_virtual: !!a.is_virtual };
+        lsSet('deriv_active', realLoginid); saveTokenStore();
+      }
+      if(a.account_list && a.account_list.length){
+        accountList = a.account_list.map(ac => ({
+          loginid: ac.loginid, currency: ac.currency || 'USD', is_virtual: !!ac.is_virtual,
+          account_type: ac.account_type || 'real', token: getStoredToken(ac.loginid),
+          balance: ac.loginid === realLoginid ? realBalance : null
+        }));
+      } else {
+        accountList = [{ loginid: realLoginid, currency: userCurrency, is_virtual: !!a.is_virtual, token: activeToken, balance: realBalance }];
+      }
+      updateBalanceUI(); showUserCard(); renderAcctMenu();
+      $('sbAuth').textContent = (a.is_virtual ? 'Demo' : 'Live') + ':' + a.loginid;
+      $('sbAuth').style.color = a.is_virtual ? 'var(--gold)' : 'var(--green)';
+      $('hPnlBadge').style.display = 'flex';
+      send({balance: 1, subscribe: 1});
+      send({portfolio: 1, contract_type: ['ACCU']});
+      ALL_SYMS.forEach(s => send({ticks: s.sym, subscribe: 1}));
+      toast('✅ ' + (a.is_virtual ? 'Demo' : 'Live') + ' · ' + userInfo.name + ' · ' + userCurrency + ' ' + (realBalance || 0).toFixed(2), 'g', 4000);
       return;
     }
-    authed=true;
-    const a=d.authorize;
-    const realLoginid=a.loginid||activeLoginid;
-    activeLoginid=realLoginid;userCurrency=a.currency||'USD';
-    userInfo={name:a.fullname||a.loginid||'Trader',loginid:realLoginid,currency:userCurrency};
-    console.log('[Deriv] Authorized:', {name:userInfo.name, loginid:activeLoginid, currency:userCurrency, is_virtual:a.is_virtual, balance:a.balance});
-    realBalance=a.balance!==undefined?parseFloat(a.balance):null;
-    if(realLoginid&&realLoginid.length>2&&activeToken&&activeToken.length>10){
-      tokenStore[realLoginid]={token:activeToken,currency:userCurrency,is_virtual:!!a.is_virtual};
-      lsSet('deriv_active',realLoginid);saveTokenStore();
-    }
-    if(a.account_list&&a.account_list.length){
-      accountList=a.account_list.map(ac=>({loginid:ac.loginid,currency:ac.currency||'USD',is_virtual:!!ac.is_virtual,account_type:ac.account_type||'real',token:getStoredToken(ac.loginid),balance:ac.loginid===realLoginid?realBalance:null}));
-    }else{accountList=[{loginid:realLoginid,currency:userCurrency,is_virtual:!!a.is_virtual,token:activeToken,balance:realBalance}];}
-    updateBalanceUI();showUserCard();renderAcctMenu();
-    $('sbAuth').textContent=(a.is_virtual?'Demo':'Live')+':'+a.loginid;
-    $('sbAuth').style.color=a.is_virtual?'var(--gold)':'var(--green)';
-    $('hPnlBadge').style.display='flex';
-    // Subscribe to balance updates from Deriv
-    send({balance:1,subscribe:1});
-    // Check for any open ACCU contracts
-    send({portfolio:1,contract_type:['ACCU']});
-    // Re-subscribe all ticks
-    ALL_SYMS.forEach(s=>send({ticks:s.sym,subscribe:1}));
-    // Eagerly fetch contracts_for EVERY symbol so cache is warm before first trade
-    ALL_SYMS.forEach((s,i)=>setTimeout(()=>requestContractsFor(s.sym),i*120));
-    // Request fresh balance
-    setTimeout(()=>send({balance:1}),500);
-    // Start proposal stream after contracts cache has time to populate
-    setTimeout(()=>{
-      if(!con&&authed&&ws&&ws.readyState===1)updateProposalStream();
-    },2500);
-    const acctTypeLabel = a.is_virtual ? '🎮 Demo Account' : '💰 Real Account';
-    toast('✅ '+acctTypeLabel+' · '+userInfo.name+' · '+userCurrency+' '+(realBalance||0).toFixed(2),'g',5000);
-    return;
-  }
-  if(t==='balance'){
+    if(t==='balance'){
     if(d.balance && d.balance.balance !== undefined){
       const nb = parseFloat(d.balance.balance);
       const ob = realBalance;
